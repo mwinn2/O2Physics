@@ -815,7 +815,7 @@ struct AnalysisDileptonHadron {
 
     // TODO: Create separate histogram directories for each selection used in the creation of the dileptons
     // TODO: Implement possibly multiple selections for the associated track ?
-    if (context.mOptions.get<bool>("processElectronMuonSkimmed") || context.mOptions.get<bool>("processAllSkimmed")) {
+    if (context.mOptions.get<bool>("processSkimmed")) {
       DefineHistograms(fHistMan, "DileptonsSelected;DileptonHadronInvMass;DileptonHadronCorrelation"); // define all histograms
       VarManager::SetUseVars(fHistMan->GetUsedVars());
       fOutputList.setObject(fHistMan->GetMainHistogramList());
