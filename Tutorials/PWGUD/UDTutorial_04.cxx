@@ -82,6 +82,10 @@ struct UDTutorial04 {
     }
   }
 
+  PresliceUnsorted<aod::UDMcParticles> partPerMcCollision = aod::udmcparticle::udMcCollisionId;
+  PresliceUnsorted<CCs> colPerMcCollision = aod::udcollision::udMcCollisionId;
+  PresliceUnsorted<TCs> trackPerMcParticle = aod::udmctracklabel::udMcParticleId;
+
   // retrieve particle mass (GeV/c^2) from TDatabasePDG
   float particleMass(TDatabasePDG* pdg, int pid)
   {
@@ -102,14 +106,14 @@ struct UDTutorial04 {
     return true;
   }
 
-  // check if a generated event is of the type rho0 -> mu+ + mu- using the MC particle stack
+  // check if a generated event is of the type J/Psi -> mu+ + mu- using the MC particle stack
   template <typename MCTrack>
   std::vector<int64_t> getDaughterParts_gen(MCTrack const& parts)
   {
     std::vector<int64_t> selectedParts;
 
-    // in this case we expect the data files to contain events of the type rho0 -> mu+ + mu-
-    if (udhelpers::isSTARLightRhomumu(parts)) {
+    // in this case we expect the data files to contain events of the type J/Psi -> mu+ + mu-
+    if (udhelpers::isSTARLightJPsimumu(parts)) {
       selectedParts.push_back(1);
       selectedParts.push_back(2);
     }
@@ -243,7 +247,7 @@ struct UDTutorial04 {
     }
   }
 
-  // check a reconstructed pair of tracks to be a candidate for an event of the type rho0 -> mu+ + mu-
+  // check a reconstructed pair of tracks to be a candidate for an event of the type J/Psi -> mu+ + mu-
   bool isSelected_rec(TCs const& tracks, std::vector<int64_t> const& trackIds)
   {
     // tracks is expected to contain two tracks
@@ -288,10 +292,6 @@ struct UDTutorial04 {
     // has passed all selection crtieria
     return true;
   }
-
-  Preslice<aod::UDMcParticles> partPerMcCollision = aod::udmcparticle::udMcCollisionId;
-  PresliceUnsorted<CCs> colPerMcCollision = aod::udcollision::udMcCollisionId;
-  PresliceUnsorted<TCs> trackPerMcParticle = aod::udmctracklabel::udMcParticleId;
 
   // ...............................................................................................................
   void processMCTruth(aod::UDMcCollisions const& mccollisions, CCs const& collisions, aod::UDMcParticles const& McParts, TCs const& tracks)
