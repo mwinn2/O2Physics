@@ -21,6 +21,7 @@
 #include "TLorentzVector.h"
 #include "Framework/Logger.h"
 #include "DataFormatsFT0/Digit.h"
+#include "DataFormatsFIT/Triggers.h"
 #include "CommonConstants/LHCConstants.h"
 #include "Common/DataModel/EventSelection.h"
 #include "Common/DataModel/TrackSelectionTables.h"
@@ -49,7 +50,6 @@ int8_t netCharge(TCs tracks)
   return nch;
 }
 
-// -----------------------------------------------------------------------------
 // return net charge of tracks
 template <bool onlyPV, typename std::enable_if<!onlyPV>::type* = nullptr, typename TCs>
 int8_t netCharge(TCs tracks)
@@ -118,7 +118,7 @@ T compatibleBCs(I& bcIter, uint64_t meanBC, int deltaBC, T const& bcs)
 
   // check [min,max]BC to overlap with [bcs.iteratorAt([0,bcs.size() - 1])
   if (maxBC < bcs.iteratorAt(0).globalBC() || minBC > bcs.iteratorAt(bcs.size() - 1).globalBC()) {
-    LOGF(info, "<compatibleBCs> No overlap of [%d, %d] and [%d, %d]", minBC, maxBC, bcs.iteratorAt(0).globalBC(), bcs.iteratorAt(bcs.size() - 1).globalBC());
+    LOGF(debug, "<compatibleBCs> No overlap of [%d, %d] and [%d, %d]", minBC, maxBC, bcs.iteratorAt(0).globalBC(), bcs.iteratorAt(bcs.size() - 1).globalBC());
     return T{{bcs.asArrowTable()->Slice(0, 0)}, (uint64_t)0};
   }
 
@@ -295,58 +295,56 @@ bool hasGoodPID(DGCutparHolder diffCuts, TC track)
 }
 
 // -----------------------------------------------------------------------------
-float FV0AmplitudeA(aod::FV0A&& fv0)
+template <typename TFV0>
+float FV0AmplitudeA(TFV0 fv0)
 {
-  float totAmplitude = 0;
-  for (auto amp : fv0.amplitude()) {
-    totAmplitude += amp;
-  }
-
-  return totAmplitude;
+  const auto& ampsA = fv0.amplitude();
+  return std::accumulate(ampsA.begin(), ampsA.end(), 0.f);
 }
 
 // -----------------------------------------------------------------------------
-float FT0AmplitudeA(aod::FT0&& ft0)
+template <typename TFT0>
+float FT0AmplitudeA(TFT0 ft0)
 {
-  float totAmplitude = 0;
-  for (auto amp : ft0.amplitudeA()) {
-    totAmplitude += amp;
-  }
-
-  return totAmplitude;
+  const auto& ampsA = ft0.amplitudeA();
+  return std::accumulate(ampsA.begin(), ampsA.end(), 0.f);
 }
 
 // -----------------------------------------------------------------------------
-float FT0AmplitudeC(aod::FT0&& ft0)
+template <typename TFT0>
+float FT0AmplitudeC(TFT0 ft0)
 {
-  float totAmplitude = 0;
-  for (auto amp : ft0.amplitudeC()) {
-    totAmplitude += amp;
-  }
-
-  return totAmplitude;
+  const auto& ampsC = ft0.amplitudeC();
+  return std::accumulate(ampsC.begin(), ampsC.end(), 0.f);
 }
 
 // -----------------------------------------------------------------------------
-float FDDAmplitudeA(aod::FDD&& fdd)
+template <typename TFDD>
+float FDDAmplitudeA(TFDD fdd)
 {
-  float totAmplitude = 0;
-  for (auto amp : fdd.chargeA()) {
-    totAmplitude += amp;
-  }
-
-  return totAmplitude;
+  std::vector<int16_t> ampsA(fdd.chargeA(), fdd.chargeA() + 8);
+  return std::accumulate(ampsA.begin(), ampsA.end(), 0);
 }
 
 // -----------------------------------------------------------------------------
-float FDDAmplitudeC(aod::FDD&& fdd)
+template <typename TFDD>
+float FDDAmplitudeC(TFDD fdd)
 {
-  float totAmplitude = 0;
-  for (auto amp : fdd.chargeC()) {
-    totAmplitude += amp;
-  }
+  std::vector<int16_t> ampsC(fdd.chargeC(), fdd.chargeC() + 8);
+  return std::accumulate(ampsC.begin(), ampsC.end(), 0);
+}
 
-  return totAmplitude;
+// -----------------------------------------------------------------------------
+template <typename T>
+bool cleanFV0(T& bc, float maxFITtime, float limitA)
+{
+  if (bc.has_foundFV0() && limitA >= 0.) {
+    bool ota = std::abs(bc.foundFV0().time()) <= maxFITtime;
+    bool oma = FV0AmplitudeA(bc.foundFV0()) <= limitA;
+    return ota && oma;
+  } else {
+    return true;
+  }
 }
 
 // -----------------------------------------------------------------------------
@@ -356,12 +354,6 @@ bool cleanFT0A(T& bc, float maxFITtime, float limitA)
   if (bc.has_foundFT0() && limitA >= 0.) {
     bool ota = std::abs(bc.foundFT0().timeA()) <= maxFITtime;
     bool oma = FT0AmplitudeA(bc.foundFT0()) <= limitA;
-
-    // compare decisions with FT0 trigger decisions
-    std::bitset<8> triggers = bc.foundFT0().triggerMask();
-    bool ora = !triggers[o2::ft0::Triggers::bitA];
-    LOGF(debug, "ota %f ora/FT0AmplitudeA %d/%d", bc.foundFT0().timeA(), ora, oma);
-
     return ota && oma;
   } else {
     return true;
@@ -375,12 +367,6 @@ bool cleanFT0C(T& bc, float maxFITtime, float limitC)
   if (bc.has_foundFT0() && limitC >= 0.) {
     bool otc = std::abs(bc.foundFT0().timeC()) <= maxFITtime;
     bool omc = FT0AmplitudeC(bc.foundFT0()) <= limitC;
-
-    // compare decisions with FT0 trigger decisions
-    std::bitset<8> triggers = bc.foundFT0().triggerMask();
-    bool orc = !triggers[o2::ft0::Triggers::bitC];
-    LOGF(debug, "otc %f orc/FT0AmplitudeC %d/%d", bc.foundFT0().timeC(), orc, omc);
-
     return otc && omc;
   } else {
     return true;
@@ -408,19 +394,6 @@ bool cleanFDDC(T& bc, float maxFITtime, float limitC)
     bool otc = std::abs(bc.foundFDD().timeC()) <= maxFITtime;
     bool omc = FDDAmplitudeC(bc.foundFDD()) <= limitC;
     return otc && omc;
-  } else {
-    return true;
-  }
-}
-
-// -----------------------------------------------------------------------------
-template <typename T>
-bool cleanFV0(T& bc, float maxFITtime, float limitA)
-{
-  if (bc.has_foundFV0() && limitA >= 0.) {
-    bool ota = std::abs(bc.foundFV0().time()) <= maxFITtime;
-    bool oma = FV0AmplitudeA(bc.foundFV0()) <= limitA;
-    return ota && oma;
   } else {
     return true;
   }
@@ -495,33 +468,106 @@ bool cleanFITC(T& bc, float maxFITtime, std::vector<float> lims)
 }
 
 // -----------------------------------------------------------------------------
+template <typename T>
+bool TVX(T& bc)
+{
+  bool tvx = false;
+  if (bc.has_foundFT0()) {
+    auto ft0 = bc.foundFT0();
+    tvx = TESTBIT(ft0.triggerMask(), o2::fit::Triggers::bitVertex);
+  }
+  return tvx;
+}
+
+// -----------------------------------------------------------------------------
+template <typename T>
+bool TSC(T& bc)
+{
+  bool tsc = false;
+  if (bc.has_foundFT0()) {
+    auto ft0 = bc.foundFT0();
+    tsc = TESTBIT(ft0.triggerMask(), o2::fit::Triggers::bitSCen);
+  }
+  return tsc;
+}
+
+// -----------------------------------------------------------------------------
+template <typename T>
+bool TCE(T& bc)
+{
+  bool tce = false;
+  if (bc.has_foundFT0()) {
+    auto ft0 = bc.foundFT0();
+    tce = TESTBIT(ft0.triggerMask(), o2::fit::Triggers::bitCen);
+  }
+  return tce;
+}
+
+// -----------------------------------------------------------------------------
+template <typename T>
+bool TOR(T& bc, float maxFITtime, std::vector<float> lims)
+{
+  auto torA = !cleanFT0A(bc, maxFITtime, lims[1]);
+  auto torC = !cleanFT0C(bc, maxFITtime, lims[2]);
+  return torA || torC;
+}
+
+// -----------------------------------------------------------------------------
+// returns true if veto is active
+// return false if veto is not active
+template <typename T>
+bool FITveto(T const& bc, DGCutparHolder const& diffCuts)
+{
+  // return if FIT veto is found in bc
+  // Double Gap (DG) condition
+  // 4 types of vetoes:
+  //  0 TVX
+  //  1 TSC
+  //  2 TCE
+  //  3 TOR
+  if (diffCuts.withTVX()) {
+    return TVX(bc);
+  }
+  if (diffCuts.withTSC()) {
+    return TSC(bc);
+  }
+  if (diffCuts.withTCE()) {
+    return TCE(bc);
+  }
+  if (diffCuts.withTOR()) {
+    return !cleanFIT(bc, diffCuts.maxFITtime(), diffCuts.FITAmpLimits());
+  }
+  return false;
+}
+
+// -----------------------------------------------------------------------------
 // fill BB and BG information into FITInfo
 template <typename BCR>
 void fillBGBBFlags(upchelpers::FITInfo& info, uint64_t const& minbc, BCR const& bcrange)
 {
-  for (auto const& bc2u : bcrange) {
+  for (auto const& bc : bcrange) {
 
     // 0 <= bit <= 31
-    auto bit = bc2u.globalBC() - minbc;
-    if (!bc2u.selection_bit(o2::aod::evsel::kNoBGT0A))
+    auto bit = bc.globalBC() - minbc;
+    if (!bc.selection_bit(o2::aod::evsel::kNoBGT0A))
       SETBIT(info.BGFT0Apf, bit);
-    if (!bc2u.selection_bit(o2::aod::evsel::kNoBGT0C))
+    if (!bc.selection_bit(o2::aod::evsel::kNoBGT0C))
       SETBIT(info.BGFT0Cpf, bit);
-    if (bc2u.selection_bit(o2::aod::evsel::kIsBBT0A))
+    if (bc.selection_bit(o2::aod::evsel::kIsBBT0A))
       SETBIT(info.BBFT0Apf, bit);
-    if (bc2u.selection_bit(o2::aod::evsel::kIsBBT0C))
+    if (bc.selection_bit(o2::aod::evsel::kIsBBT0C))
       SETBIT(info.BBFT0Cpf, bit);
-    if (!bc2u.selection_bit(o2::aod::evsel::kNoBGV0A))
+    if (!bc.selection_bit(o2::aod::evsel::kNoBGV0A))
       SETBIT(info.BGFV0Apf, bit);
-    if (bc2u.selection_bit(o2::aod::evsel::kIsBBV0A))
+    if (bc.selection_bit(o2::aod::evsel::kIsBBV0A))
       SETBIT(info.BBFV0Apf, bit);
-    if (!bc2u.selection_bit(o2::aod::evsel::kNoBGFDA))
+    if (!bc.selection_bit(o2::aod::evsel::kNoBGFDA))
       SETBIT(info.BGFDDApf, bit);
-    if (!bc2u.selection_bit(o2::aod::evsel::kNoBGFDC))
+    if (!bc.selection_bit(o2::aod::evsel::kNoBGFDC))
       SETBIT(info.BGFDDCpf, bit);
-    if (bc2u.selection_bit(o2::aod::evsel::kIsBBFDA))
+    if (bc.selection_bit(o2::aod::evsel::kIsBBFDA))
       SETBIT(info.BBFDDApf, bit);
-    if (bc2u.selection_bit(o2::aod::evsel::kIsBBFDC))
+    if (bc.selection_bit(o2::aod::evsel::kIsBBFDC))
       SETBIT(info.BBFDDCpf, bit);
   }
 }
@@ -539,34 +585,22 @@ void getFITinfo(upchelpers::FITInfo& info, uint64_t const& bcnum, B const& bcs, 
   if (selbc.size() > 0) {
     auto bc = selbc.begin();
 
+    // FV0A
+    if (bc.has_foundFV0()) {
+      auto fv0 = fv0as.iteratorAt(bc.foundFV0Id());
+      info.timeFV0A = fv0.time();
+      info.ampFV0A = FV0AmplitudeA(fv0);
+      info.triggerMaskFV0A = fv0.triggerMask();
+    }
+
     // FT0
     if (bc.has_foundFT0()) {
       auto ft0 = ft0s.iteratorAt(bc.foundFT0Id());
       info.timeFT0A = ft0.timeA();
       info.timeFT0C = ft0.timeC();
-      const auto& ampsA = ft0.amplitudeA();
-      const auto& ampsC = ft0.amplitudeC();
-      info.ampFT0A = 0.;
-      for (auto amp : ampsA) {
-        info.ampFT0A += amp;
-      }
-      info.ampFT0C = 0.;
-      for (auto amp : ampsC) {
-        info.ampFT0C += amp;
-      }
+      info.ampFT0A = FT0AmplitudeA(ft0);
+      info.ampFT0C = FT0AmplitudeC(ft0);
       info.triggerMaskFT0 = ft0.triggerMask();
-    }
-
-    // FV0A
-    if (bc.has_foundFV0()) {
-      auto fv0a = fv0as.iteratorAt(bc.foundFV0Id());
-      info.timeFV0A = fv0a.time();
-      const auto& amps = fv0a.amplitude();
-      info.ampFV0A = 0.;
-      for (auto amp : amps) {
-        info.ampFV0A += amp;
-      }
-      info.triggerMaskFV0A = fv0a.triggerMask();
     }
 
     // FDD
@@ -574,16 +608,8 @@ void getFITinfo(upchelpers::FITInfo& info, uint64_t const& bcnum, B const& bcs, 
       auto fdd = fdds.iteratorAt(bc.foundFDDId());
       info.timeFDDA = fdd.timeA();
       info.timeFDDC = fdd.timeC();
-      const auto& ampsA = fdd.chargeA();
-      const auto& ampsC = fdd.chargeC();
-      info.ampFDDA = 0.;
-      for (auto amp : ampsA) {
-        info.ampFDDA += amp;
-      }
-      info.ampFDDC = 0.;
-      for (auto amp : ampsC) {
-        info.ampFDDC += amp;
-      }
+      info.ampFDDA = FDDAmplitudeA(fdd);
+      info.ampFDDC = FDDAmplitudeC(fdd);
       info.triggerMaskFDD = fdd.triggerMask();
     }
   }

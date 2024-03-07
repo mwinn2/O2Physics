@@ -45,6 +45,9 @@ struct caloClusterProducerTask {
   Configurable<bool> useCoreE{"coreE", 0, "0 - full energy, 1 - core energy"};
   Configurable<bool> skipL1phase{"skipL1phase", false, "skip or apply L1phase time correction"};
   Configurable<std::vector<double>> cpvMinE{"cpvCluMinAmp", {20., 50., 50.}, "minimal CPV cluster amplitude per module"};
+  Configurable<std::string> mBadMapPath{"badmapPath", "PHS/Calib/BadMap", "path to BadMap snapshot"};
+  Configurable<std::string> mCalibPath{"calibPath", "PHS/Calib/CalibParams", "path to Calibration snapshot"};
+  Configurable<std::string> mL1PhasePath{"L1phasePath", "PHS/Calib/L1phase", "path to L1phase snapshot"};
 
   Service<o2::ccdb::BasicCCDBManager> ccdb;
 
@@ -58,8 +61,8 @@ struct caloClusterProducerTask {
   std::vector<int> mclabels;
   std::vector<float> mcamplitudes;
 
-  static constexpr int16_t kCpvX = 7; // grid 13 steps along z and 7 along phi as largest match ellips 20x10 cm
-  static constexpr int16_t kCpvZ = 13;
+  static constexpr int16_t kCpvX = 7; // grid 6 steps along z and 7 along phi as largest match ellips 20x20 cm
+  static constexpr int16_t kCpvZ = 6;
   static constexpr int16_t kCpvCells = 4 * kCpvX * kCpvZ; // 4 modules
   static constexpr float cpvMaxX = 73;                    // max CPV coordinate phi
   static constexpr float cpvMaxZ = 63;                    // max CPV coordinate z
@@ -139,11 +142,11 @@ struct caloClusterProducerTask {
     // Fill output table
 
     // calibration may be updated by CCDB fetcher
-    const o2::phos::BadChannelsMap* badMap = ccdb->getForTimeStamp<o2::phos::BadChannelsMap>("PHS/Calib/BadMap", timestamp);
-    const o2::phos::CalibParams* calibParams = ccdb->getForTimeStamp<o2::phos::CalibParams>("PHS/Calib/CalibParams", timestamp);
+    const o2::phos::BadChannelsMap* badMap = ccdb->getForTimeStamp<o2::phos::BadChannelsMap>(mBadMapPath, timestamp);
+    const o2::phos::CalibParams* calibParams = ccdb->getForTimeStamp<o2::phos::CalibParams>(mCalibPath, timestamp);
 
     if (!isMC && !skipL1phase) {
-      const std::vector<int>* vec = ccdb->getForTimeStamp<std::vector<int>>("PHS/Calib/L1phase", timestamp);
+      const std::vector<int>* vec = ccdb->getForTimeStamp<std::vector<int>>(mL1PhasePath, timestamp);
       if (vec) {
         clusterizerPHOS->setL1phase((*vec)[0]);
       } else {
@@ -433,11 +436,11 @@ struct caloClusterProducerTask {
     // Fill output table
 
     // calibration may be updated by CCDB fetcher
-    const o2::phos::BadChannelsMap* badMap = ccdb->getForTimeStamp<o2::phos::BadChannelsMap>("PHS/Calib/BadMap", timestamp);
-    const o2::phos::CalibParams* calibParams = ccdb->getForTimeStamp<o2::phos::CalibParams>("PHS/Calib/CalibParams", timestamp);
+    const o2::phos::BadChannelsMap* badMap = ccdb->getForTimeStamp<o2::phos::BadChannelsMap>(mBadMapPath, timestamp);
+    const o2::phos::CalibParams* calibParams = ccdb->getForTimeStamp<o2::phos::CalibParams>(mCalibPath, timestamp);
 
     if (!isMC && !skipL1phase) {
-      const std::vector<int>* vec = ccdb->getForTimeStamp<std::vector<int>>("PHS/Calib/L1phase", timestamp);
+      const std::vector<int>* vec = ccdb->getForTimeStamp<std::vector<int>>(mL1PhasePath, timestamp);
       if (vec) {
         clusterizerPHOS->setL1phase((*vec)[0]);
       } else {
@@ -764,11 +767,11 @@ struct caloClusterProducerTask {
     // Fill output table
 
     // calibration may be updated by CCDB fetcher
-    const o2::phos::BadChannelsMap* badMap = ccdb->getForTimeStamp<o2::phos::BadChannelsMap>("PHS/Calib/BadMap", timestamp);
-    const o2::phos::CalibParams* calibParams = ccdb->getForTimeStamp<o2::phos::CalibParams>("PHS/Calib/CalibParams", timestamp);
+    const o2::phos::BadChannelsMap* badMap = ccdb->getForTimeStamp<o2::phos::BadChannelsMap>(mBadMapPath, timestamp);
+    const o2::phos::CalibParams* calibParams = ccdb->getForTimeStamp<o2::phos::CalibParams>(mCalibPath, timestamp);
 
     if (!isMC && !skipL1phase) {
-      const std::vector<int>* vec = ccdb->getForTimeStamp<std::vector<int>>("PHS/Calib/L1phase", timestamp);
+      const std::vector<int>* vec = ccdb->getForTimeStamp<std::vector<int>>(mL1PhasePath, timestamp);
       if (vec) {
         clusterizerPHOS->setL1phase((*vec)[0]);
       } else {
@@ -877,7 +880,7 @@ struct caloClusterProducerTask {
     curBC = 0;
     for (const auto& track : tracks) {
       if (track.has_collision()) { // ignore orphan tracks without collision
-        curBC = tracks.begin().collision().bc_as<aod::BCsWithTimestamps>().globalBC();
+        curBC = track.collision().bc_as<aod::BCsWithTimestamps>().globalBC();
         break;
       }
     }
@@ -1056,14 +1059,16 @@ struct caloClusterProducerTask {
           }
 
           // same for tracks
-          for (int ii = trackPoints->mStart[indx]; ii < trackPoints->mEnd[indx]; ii++) {
-            auto pp = trackMatchPoints[indx][ii];
-            float d = pow((pp.pX - posX) * sigmaX, 2) + pow((pp.pZ - posZ) * sigmaZ, 2); // TODO different sigma for tracks
-            if (d < trackdist) {
-              trackdist = d;
-              trackDx = pp.pX - posX;
-              trackDz = pp.pZ - posZ;
-              trackindex = pp.indx;
+          if (trackPoints != trackNMatchPoints.end()) {
+            for (int ii = trackPoints->mStart[indx]; ii < trackPoints->mEnd[indx]; ii++) {
+              auto pp = trackMatchPoints[indx][ii];
+              float d = pow((pp.pX - posX) * sigmaX, 2) + pow((pp.pZ - posZ) * sigmaZ, 2); // TODO different sigma for tracks
+              if (d < trackdist) {
+                trackdist = d;
+                trackDx = pp.pX - posX;
+                trackDz = pp.pZ - posZ;
+                trackindex = pp.indx;
+              }
             }
           }
         }
@@ -1158,11 +1163,11 @@ struct caloClusterProducerTask {
     // Fill output table
 
     // calibration may be updated by CCDB fetcher
-    const o2::phos::BadChannelsMap* badMap = ccdb->getForTimeStamp<o2::phos::BadChannelsMap>("PHS/Calib/BadMap", timestamp);
-    const o2::phos::CalibParams* calibParams = ccdb->getForTimeStamp<o2::phos::CalibParams>("PHS/Calib/CalibParams", timestamp);
+    const o2::phos::BadChannelsMap* badMap = ccdb->getForTimeStamp<o2::phos::BadChannelsMap>(mBadMapPath, timestamp);
+    const o2::phos::CalibParams* calibParams = ccdb->getForTimeStamp<o2::phos::CalibParams>(mCalibPath, timestamp);
 
     if (!isMC && !skipL1phase) {
-      const std::vector<int>* vec = ccdb->getForTimeStamp<std::vector<int>>("PHS/Calib/L1phase", timestamp);
+      const std::vector<int>* vec = ccdb->getForTimeStamp<std::vector<int>>(mL1PhasePath, timestamp);
       if (vec) {
         clusterizerPHOS->setL1phase((*vec)[0]);
       } else {
@@ -1294,7 +1299,7 @@ struct caloClusterProducerTask {
     curBC = 0;
     for (const auto& track : tracks) {
       if (track.has_collision()) { // ignore orphan tracks without collision
-        curBC = tracks.begin().collision().bc_as<aod::BCsWithTimestamps>().globalBC();
+        curBC = track.collision().bc_as<aod::BCsWithTimestamps>().globalBC();
         break;
       }
     }
@@ -1473,14 +1478,16 @@ struct caloClusterProducerTask {
           }
 
           // same for tracks
-          for (int ii = trackPoints->mStart[indx]; ii < trackPoints->mEnd[indx]; ii++) {
-            auto pp = trackMatchPoints[indx][ii];
-            float d = pow((pp.pX - posX) * sigmaX, 2) + pow((pp.pZ - posZ) * sigmaZ, 2); // TODO different sigma for tracks
-            if (d < trackdist) {
-              trackdist = d;
-              trackDx = pp.pX - posX;
-              trackDz = pp.pZ - posZ;
-              trackindex = pp.indx;
+          if (trackPoints != trackNMatchPoints.end()) {
+            for (int ii = trackPoints->mStart[indx]; ii < trackPoints->mEnd[indx]; ii++) {
+              auto pp = trackMatchPoints[indx][ii];
+              float d = pow((pp.pX - posX) * sigmaX, 2) + pow((pp.pZ - posZ) * sigmaZ, 2); // TODO different sigma for tracks
+              if (d < trackdist) {
+                trackdist = d;
+                trackDx = pp.pX - posX;
+                trackDz = pp.pZ - posZ;
+                trackindex = pp.indx;
+              }
             }
           }
         }

@@ -9,6 +9,12 @@
 // granted to it by virtue of its status as an Intergovernmental Organization
 // or submit itself to any jurisdiction.
 
+#include "Framework/AnalysisDataModel.h"
+#include "Common/CCDB/EventSelectionParams.h"
+#include "Common/DataModel/EventSelection.h"
+#include "CommonConstants/LHCConstants.h"
+#include "DataFormatsFIT/Triggers.h"
+
 #include "Framework/runDataProcessing.h"
 #include "Framework/AnalysisTask.h"
 #include "PWGUD/DataModel/UDTables.h"
@@ -33,6 +39,7 @@ struct SGCandProducer {
   Produces<aod::UDCollisionsSels> outputCollisionsSels;
   Produces<aod::UDCollsLabels> outputCollsLabels;
   Produces<aod::UDZdcs> outputZdcs;
+  Produces<o2::aod::UDZdcsReduced> udZdcsReduced;
   Produces<aod::UDTracks> outputTracks;
   Produces<aod::UDTracksCov> outputTracksCov;
   Produces<aod::UDTracksDCA> outputTracksDCA;
@@ -51,7 +58,7 @@ struct SGCandProducer {
   // data inputs
   using CCs = soa::Join<aod::Collisions, aod::EvSels>;
   using CC = CCs::iterator;
-  using BCs = soa::Join<aod::BCsWithTimestamps, aod::BcSels, aod::Run3MatchedToBCSparse>;
+  using BCs = soa::Join<aod::BCs, aod::Timestamps, aod::BcSels, aod::Run3MatchedToBCSparse>;
   using BC = BCs::iterator;
   using TCs = soa::Join<aod::Tracks, /*aod::TracksCov,*/ aod::TracksExtra, aod::TracksDCA, aod::TrackSelection,
                         aod::pidTPCFullEl, aod::pidTPCFullMu, aod::pidTPCFullPi, aod::pidTPCFullKa, aod::pidTPCFullPr,
@@ -129,13 +136,7 @@ struct SGCandProducer {
   void init(InitContext&)
   {
     sameCuts = (SGCutParHolder)SGCuts;
-
-    // add histograms for the different process functions
     registry.add("reco/Stat", "Cut statistics; Selection criterion; Collisions", {HistType::kTH1F, {{14, -0.5, 13.5}}});
-    registry.add("reco/pt1Vspt2", "2 prong events, p_{T} versus p_{T}", {HistType::kTH2F, {{100, -3., 3.}, {100, -3., 3.0}}});
-    registry.add("reco/TPCsignal1", "2 prong events, TPC signal versus p_{T} of particle 1", {HistType::kTH2F, {{200, -3., 3.}, {200, 0., 100.0}}});
-    registry.add("reco/TPCsignal2", "2 prong events, TPC signal versus p_{T} of particle 2", {HistType::kTH2F, {{200, -3., 3.}, {200, 0., 100.0}}});
-    registry.add("reco/sig1VsSig2TPC", "2 prong events, TPC signal versus TPC signal", {HistType::kTH2F, {{100, 0., 100.}, {100, 0., 100.}}});
   }
 
   // process function for real data
@@ -148,32 +149,26 @@ struct SGCandProducer {
       return;
     }
     auto bc = collision.foundBC_as<BCs>();
-    LOGF(debug, "<SGCandProducer>  BC id %d", bc.globalBC());
 
     // obtain slice of compatible BCs
     auto bcRange = udhelpers::compatibleBCs(collision, sameCuts.NDtcoll(), bcs, sameCuts.minNBCs());
-    LOGF(debug, "<SGCandProducer>  Size of bcRange %d", bcRange.size());
-
-    // apply SG selection
-    //    auto isSGEvent = sgSelector.IsSelected(sameCuts, collision, bcRange, tracks, fwdtracks);
-    auto isSGEvent = sgSelector.IsSelected(sameCuts, collision, bcRange, tracks, fwdtracks);
-
-    // Check if it's a SingleGap event for sideC
+    auto isSGEvent = sgSelector.IsSelected(sameCuts, collision, bcRange);
+    // auto isSGEvent = sgSelector.IsSelected(sameCuts, collision, bcRange, tracks);
     registry.get<TH1>(HIST("reco/Stat"))->Fill(0., 1.);
     registry.get<TH1>(HIST("reco/Stat"))->Fill(isSGEvent + 1, 1.);
     if (isSGEvent <= 2) {
-      LOGF(debug, "<SGCandProducer>  Data: good collision!");
-
-      // fill FITInfo
+      //      if (isSGEvent < 2) LOGF(info, "Current BC: %i, %i", bc.globalBC(), isSGEvent);
+      if (sameCuts.minRgtrwTOF()) {
+        if (udhelpers::rPVtrwTOF<true>(tracks, collision.numContrib()) < sameCuts.minRgtrwTOF())
+          return;
+      }
       upchelpers::FITInfo fitInfo{};
       udhelpers::getFITinfo(fitInfo, bc.globalBC(), bcs, ft0s, fv0as, fdds);
-
       // update SG candidates tables
-      auto rtrwTOF = udhelpers::rPVtrwTOF<true>(tracks, collision.numContrib());
       outputCollisions(bc.globalBC(), bc.runNumber(),
                        collision.posX(), collision.posY(), collision.posZ(),
                        collision.numContrib(), udhelpers::netCharge<true>(tracks),
-                       rtrwTOF);
+                       1.); // rtrwTOF); //omit the calculation to speed up the things while skimming
       outputSGCollisions(isSGEvent);
       outputCollisionsSels(fitInfo.ampFT0A, fitInfo.ampFT0C, fitInfo.timeFT0A, fitInfo.timeFT0C,
                            fitInfo.triggerMaskFT0,
@@ -184,54 +179,25 @@ struct SGCandProducer {
                            fitInfo.BBFV0Apf, fitInfo.BGFV0Apf,
                            fitInfo.BBFDDApf, fitInfo.BBFDDCpf, fitInfo.BGFDDApf, fitInfo.BGFDDCpf);
       outputCollsLabels(collision.globalIndex());
-
+      if (bc.has_zdc()) {
+        auto zdc = bc.zdc();
+        udZdcsReduced(outputCollisions.lastIndex(), zdc.timeZNA(), zdc.timeZNC(), zdc.energyCommonZNA(), zdc.energyCommonZNC());
+      } else {
+        udZdcsReduced(outputCollisions.lastIndex(), -999, -999, -999, -999);
+      }
       // update SGTracks tables
       for (auto& track : tracks) {
-        updateUDTrackTables(outputCollisions.lastIndex(), track, bc.globalBC());
+        if (track.isPVContributor() && track.eta() > sameCuts.minEta() && track.eta() < sameCuts.maxEta())
+          updateUDTrackTables(outputCollisions.lastIndex(), track, bc.globalBC());
+        // if (track.isPVContributor())  updateUDTrackTables(outputCollisions.lastIndex(), track, bc.globalBC());
       }
 
       // update SGFwdTracks tables
-      for (auto& fwdtrack : fwdtracks) {
-        updateUDFwdTrackTables(fwdtrack, bc.globalBC());
-      }
-
-      // fill UDZdcs
-      if (bc.has_zdc()) {
-        auto zdc = bc.zdc();
-        auto enes = std::vector(zdc.energy().begin(), zdc.energy().end());
-        auto chEs = std::vector(zdc.channelE().begin(), zdc.channelE().end());
-        auto amps = std::vector(zdc.amplitude().begin(), zdc.amplitude().end());
-        auto times = std::vector(zdc.time().begin(), zdc.time().end());
-        auto chTs = std::vector(zdc.channelT().begin(), zdc.channelT().end());
-        outputZdcs(outputCollisions.lastIndex(), enes, chEs, amps, times, chTs);
-      }
-
-      // produce TPC signal histograms for 2-track events
-      LOGF(debug, "SG candidate: number of PV tracks %d", collision.numContrib());
-      if (collision.numContrib() == 2) {
-        auto cnt = 0;
-        float pt1 = 0., pt2 = 0.;
-        float signalTPC1 = 0., signalTPC2 = 0.;
-        for (auto tr : tracks) {
-          if (tr.isPVContributor()) {
-            cnt++;
-            switch (cnt) {
-              case 1:
-                pt1 = tr.pt() * tr.sign();
-                signalTPC1 = tr.tpcSignal();
-                break;
-              case 2:
-                pt2 = tr.pt() * tr.sign();
-                signalTPC2 = tr.tpcSignal();
-            }
-            LOGF(debug, "<SGCandProducer>    track[%d] %d pT %f ITS %d TPC %d TRD %d TOF %d",
-                 cnt, tr.isGlobalTrack(), tr.pt(), tr.itsNCls(), tr.tpcNClsCrossedRows(), tr.hasTRD(), tr.hasTOF());
-          }
+      if (sameCuts.withFwdTracks()) {
+        for (auto& fwdtrack : fwdtracks) {
+          if (!sgSelector.FwdTrkSelector(fwdtrack))
+            updateUDFwdTrackTables(fwdtrack, bc.globalBC());
         }
-        registry.get<TH2>(HIST("reco/pt1Vspt2"))->Fill(pt1, pt2);
-        registry.get<TH2>(HIST("reco/TPCsignal1"))->Fill(pt1, signalTPC1);
-        registry.get<TH2>(HIST("reco/TPCsignal2"))->Fill(pt2, signalTPC2);
-        registry.get<TH2>(HIST("reco/sig1VsSig2TPC"))->Fill(signalTPC1, signalTPC2);
       }
     }
   }

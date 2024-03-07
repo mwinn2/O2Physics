@@ -22,8 +22,20 @@ o2physics_add_dpl_workflow(emc-eventselection-qa
                     SOURCES emceventselectionqa.cxx
                     PUBLIC_LINK_LIBRARIES O2::Framework O2::EMCALBase O2::EMCALCalib O2Physics::AnalysisCore
                     COMPONENT_NAME Analysis)
+o2physics_add_dpl_workflow(emc-vertexselection-qa
+                    SOURCES emcvertexselectionqa.cxx
+                    PUBLIC_LINK_LIBRARIES O2::Framework O2::EMCALBase O2::EMCALCalib O2Physics::AnalysisCore
+                    COMPONENT_NAME Analysis)
+o2physics_add_dpl_workflow(emc-pi0-energyscale-calib
+                    SOURCES emcalPi0EnergyScaleCalib.cxx
+                    PUBLIC_LINK_LIBRARIES O2::Framework O2::EMCALBase O2::EMCALCalib O2Physics::AnalysisCore
+                    COMPONENT_NAME Analysis)
 o2physics_add_dpl_workflow(emc-tmmonitor
                     SOURCES emctmmonitor.cxx
+                    PUBLIC_LINK_LIBRARIES O2::Framework O2::EMCALBase O2::EMCALCalib O2Physics::AnalysisCore
+                    COMPONENT_NAME Analysis)
+o2physics_add_dpl_workflow(mc-generator-studies
+                    SOURCES mcgeneratorstudies.cxx
                     PUBLIC_LINK_LIBRARIES O2::Framework O2::EMCALBase O2::EMCALCalib O2Physics::AnalysisCore
                     COMPONENT_NAME Analysis)
 
@@ -92,6 +104,10 @@ if(FastJet_FOUND)
                         SOURCES trackJetqa.cxx
                         PUBLIC_LINK_LIBRARIES O2::Framework O2Physics::PWGJECore O2Physics::AnalysisCore
                         COMPONENT_NAME Analysis)
+    o2physics_add_dpl_workflow(jet-hadron-recoil
+                        SOURCES jetHadronRecoil.cxx
+                        PUBLIC_LINK_LIBRARIES O2::Framework O2Physics::PWGJECore O2Physics::AnalysisCore
+                        COMPONENT_NAME Analysis)
     o2physics_add_dpl_workflow(jet-nsubjettiness
                         SOURCES nSubjettiness.cxx
                         PUBLIC_LINK_LIBRARIES O2::Framework O2Physics::PWGJECore O2Physics::AnalysisCore
@@ -99,5 +115,13 @@ if(FastJet_FOUND)
     o2physics_add_dpl_workflow(phi-in-jets
                         SOURCES phiInJets.cxx
                         PUBLIC_LINK_LIBRARIES O2::Framework O2Physics::PWGJECore O2Physics::AnalysisCore
+                        COMPONENT_NAME Analysis)
+    o2physics_add_dpl_workflow(jet-taggerhf-qa
+                        SOURCES jettaggerhfQA.cxx
+                        PUBLIC_LINK_LIBRARIES O2::Framework O2Physics::PWGJECore O2Physics::AnalysisCore
+                        COMPONENT_NAME Analysis)
+    o2physics_add_dpl_workflow(jet-lund-reclustering
+                        SOURCES jetLundReclustering.cxx
+                        PUBLIC_LINK_LIBRARIES O2::Framework O2Physics::PWGJECore O2Physics::AnalysisCore FastJet::FastJet FastJet::Contrib
                         COMPONENT_NAME Analysis)
 endif()

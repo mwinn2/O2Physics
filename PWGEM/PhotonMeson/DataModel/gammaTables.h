@@ -31,7 +31,6 @@ namespace o2::aod
 namespace emreducedevent
 {
 DECLARE_SOA_COLUMN(CollisionId, collisionId, int); //!
-DECLARE_SOA_COLUMN(Tag, tag, uint64_t);            //!  Bit-field for storing event information (e.g. high level info, cut decisions)
 DECLARE_SOA_COLUMN(NgammaPCM, ngpcm, int);
 DECLARE_SOA_COLUMN(NgammaPHOS, ngphos, int);
 DECLARE_SOA_COLUMN(NgammaEMC, ngemc, int);
@@ -43,6 +42,7 @@ DECLARE_SOA_COLUMN(NmumuLSpp, nmumulspp, int);
 DECLARE_SOA_COLUMN(NmumuLSmm, nmumulsmm, int);
 DECLARE_SOA_COLUMN(IsPHOSCPVReadout, isPHOSCPVreadout, bool);
 DECLARE_SOA_COLUMN(IsEMCReadout, isEMCreadout, bool);
+DECLARE_SOA_COLUMN(NcollsPerBC, ncollsPerBC, int);
 DECLARE_SOA_COLUMN(Bz, bz, float);                       //! kG
 DECLARE_SOA_COLUMN(Q2xTPCPosEta, q2xtpcposeta, float);   //! Qx for 2nd harmonics in TPC positive eta region
 DECLARE_SOA_COLUMN(Q2yTPCPosEta, q2ytpcposeta, float);   //! Qy for 2nd harmonics in TPC positive eta region
@@ -70,8 +70,8 @@ DECLARE_SOA_COLUMN(Q3xFV0A, q3xfv0a, float);             //! Qx for 3rd harmonic
 DECLARE_SOA_COLUMN(Q3yFV0A, q3yfv0a, float);             //! Qy for 3rd harmonics in FV0A (i.e. positive eta)
 } // namespace emreducedevent
 DECLARE_SOA_TABLE(EMReducedEvents, "AOD", "EMREDUCEDEVENT", //!   Main event information table
-                  o2::soa::Index<>, emreducedevent::CollisionId, emreducedevent::Tag, bc::RunNumber, bc::TriggerMask, evsel::Sel8,
-                  emreducedevent::IsPHOSCPVReadout, emreducedevent::IsEMCReadout,
+                  o2::soa::Index<>, emreducedevent::CollisionId, bc::GlobalBC, bc::RunNumber, evsel::Sel8, evsel::Alias, evsel::Selection,
+                  emreducedevent::IsPHOSCPVReadout, emreducedevent::IsEMCReadout, emreducedevent::NcollsPerBC,
                   collision::PosX, collision::PosY, collision::PosZ,
                   collision::NumContrib, collision::CollisionTime, collision::CollisionTimeRes);
 using EMReducedEvent = EMReducedEvents::iterator;
@@ -80,8 +80,11 @@ DECLARE_SOA_TABLE(EMReducedEventsBz, "AOD", "EMEVENTBZ", emreducedevent::Bz); //
 using EMReducedEventBz = EMReducedEventsBz::iterator;
 
 DECLARE_SOA_TABLE(EMReducedEventsMult, "AOD", "EMEVENTMULT", //!   event multiplicity table, joinable to EMReducedEvents
-                  mult::MultTPC, mult::MultFV0A, mult::MultFV0C, mult::MultFT0A, mult::MultFT0C,
-                  mult::MultFDDA, mult::MultFDDC, mult::MultZNA, mult::MultZNC, mult::MultTracklets, mult::MultNTracksPV, mult::MultNTracksPVeta1);
+                  mult::MultFV0A, mult::MultFV0C, mult::MultFT0A, mult::MultFT0C,
+                  mult::MultFDDA, mult::MultFDDC, mult::MultZNA, mult::MultZNC,
+                  mult::MultTPC, mult::MultTracklets, mult::MultNTracksPV, mult::MultNTracksPVeta1, mult::MultNTracksPVetaHalf,
+                  mult::IsInelGt0<mult::MultNTracksPVeta1>,
+                  mult::IsInelGt1<mult::MultNTracksPVeta1>);
 using EMReducedEventMult = EMReducedEventsMult::iterator;
 
 DECLARE_SOA_TABLE(EMReducedEventsCent, "AOD", "EMEVENTCENT", //!   event centrality table, joinable to EMReducedEvents
@@ -228,7 +231,51 @@ DECLARE_SOA_DYNAMIC_COLUMN(P, p, [](float px, float py, float pz) -> float { ret
 DECLARE_SOA_DYNAMIC_COLUMN(Pt, pt, [](float px, float py) -> float { return RecoDecay::sqrtSumOfSquares(px, py); });
 DECLARE_SOA_DYNAMIC_COLUMN(Eta, eta, [](float px, float py, float pz) -> float { return RecoDecay::eta(std::array{px, py, pz}); });
 DECLARE_SOA_DYNAMIC_COLUMN(Phi, phi, [](float px, float py) -> float { return RecoDecay::phi(px, py); });
-// DECLARE_SOA_COLUMN(IsAmbTrack, isAmbTrack, bool); //!
+DECLARE_SOA_DYNAMIC_COLUMN(MeanClusterSizeITS, meanClusterSizeITS, [](uint32_t itsClusterSizes) -> float {
+  int total_cluster_size = 0, nl = 0;
+  for (unsigned int layer = 0; layer < 7; layer++) {
+    int cluster_size_per_layer = (itsClusterSizes >> (layer * 4)) & 0xf;
+    if (cluster_size_per_layer > 0) {
+      nl++;
+    }
+    total_cluster_size += cluster_size_per_layer;
+  }
+  if (nl > 0) {
+    return static_cast<float>(total_cluster_size) / static_cast<float>(nl);
+  } else {
+    return 0;
+  }
+});
+DECLARE_SOA_DYNAMIC_COLUMN(MeanClusterSizeITSib, meanClusterSizeITSib, [](uint32_t itsClusterSizes) -> float {
+  int total_cluster_size = 0, nl = 0;
+  for (unsigned int layer = 0; layer < 3; layer++) {
+    int cluster_size_per_layer = (itsClusterSizes >> (layer * 4)) & 0xf;
+    if (cluster_size_per_layer > 0) {
+      nl++;
+    }
+    total_cluster_size += cluster_size_per_layer;
+  }
+  if (nl > 0) {
+    return static_cast<float>(total_cluster_size) / static_cast<float>(nl);
+  } else {
+    return 0;
+  }
+});
+DECLARE_SOA_DYNAMIC_COLUMN(MeanClusterSizeITSob, meanClusterSizeITSob, [](uint32_t itsClusterSizes) -> float {
+  int total_cluster_size = 0, nl = 0;
+  for (unsigned int layer = 3; layer < 7; layer++) {
+    int cluster_size_per_layer = (itsClusterSizes >> (layer * 4)) & 0xf;
+    if (cluster_size_per_layer > 0) {
+      nl++;
+    }
+    total_cluster_size += cluster_size_per_layer;
+  }
+  if (nl > 0) {
+    return static_cast<float>(total_cluster_size) / static_cast<float>(nl);
+  } else {
+    return 0;
+  }
+});
 } // namespace v0leg
 DECLARE_SOA_TABLE(V0Legs, "AOD", "V0LEG", //!
                   o2::soa::Index<>, v0leg::CollisionId, v0leg::TrackId, v0leg::Sign,
@@ -237,8 +284,8 @@ DECLARE_SOA_TABLE(V0Legs, "AOD", "V0LEG", //!
                   track::TPCNClsFindable, track::TPCNClsFindableMinusFound, track::TPCNClsFindableMinusCrossedRows,
                   track::TPCChi2NCl, track::TPCInnerParam,
                   track::TPCSignal, pidtpc::TPCNSigmaEl, pidtpc::TPCNSigmaPi,
-                  track::ITSClusterMap, track::ITSChi2NCl, track::DetectorMap,
-                  track::X, track::Y, track::Z, track::Tgl, track::Signed1Pt,
+                  track::ITSClusterSizes, track::ITSChi2NCl, track::DetectorMap,
+                  track::X, track::Y, track::Z, track::Tgl,
 
                   // dynamic column
                   v0leg::P<v0leg::Px, v0leg::Py, v0leg::Pz>,
@@ -249,9 +296,12 @@ DECLARE_SOA_TABLE(V0Legs, "AOD", "V0LEG", //!
                   track::TPCNClsCrossedRows<track::TPCNClsFindable, track::TPCNClsFindableMinusCrossedRows>,
                   track::TPCCrossedRowsOverFindableCls<track::TPCNClsFindable, track::TPCNClsFindableMinusCrossedRows>,
                   track::TPCFoundOverFindableCls<track::TPCNClsFindable, track::TPCNClsFindableMinusFound>,
-                  track::ITSNCls<track::ITSClusterMap>,
+                  track::v001::ITSClusterMap<track::ITSClusterSizes>, track::v001::ITSNCls<track::ITSClusterSizes>, track::v001::ITSNClsInnerBarrel<track::ITSClusterSizes>,
                   track::HasITS<track::DetectorMap>, track::HasTPC<track::DetectorMap>,
-                  track::HasTRD<track::DetectorMap>, track::HasTOF<track::DetectorMap>);
+                  track::HasTRD<track::DetectorMap>, track::HasTOF<track::DetectorMap>,
+                  v0leg::MeanClusterSizeITS<track::ITSClusterSizes>,
+                  v0leg::MeanClusterSizeITSib<track::ITSClusterSizes>,
+                  v0leg::MeanClusterSizeITSob<track::ITSClusterSizes>);
 
 // iterators
 using V0Leg = V0Legs::iterator;
@@ -269,9 +319,8 @@ DECLARE_SOA_COLUMN(Px, px, float);                                      //! px f
 DECLARE_SOA_COLUMN(Py, py, float);                                      //! py for photon kf
 DECLARE_SOA_COLUMN(Pz, pz, float);                                      //! pz for photon kf
 DECLARE_SOA_COLUMN(MGamma, mGamma, float);                              //! invariant mass of dielectron at SV
-DECLARE_SOA_COLUMN(MGammaPV, mGammaPV, float);                          //! invariant mass of dielectron at PV
-DECLARE_SOA_COLUMN(DCAxyV0ToPV, dcaXYv0topv, float);                    //! DCAxy of V0 to PV
-DECLARE_SOA_COLUMN(DCAzV0ToPV, dcaZv0topv, float);                      //! DCAz of V0 to PV
+DECLARE_SOA_COLUMN(DCAxyToPV, dcaXYtopv, float);                        //! DCAxy of V0 to PV
+DECLARE_SOA_COLUMN(DCAzToPV, dcaZtopv, float);                          //! DCAz of V0 to PV
 DECLARE_SOA_COLUMN(CosPA, cospa, float);                                //!
 DECLARE_SOA_COLUMN(PCA, pca, float);                                    //!
 DECLARE_SOA_COLUMN(Alpha, alpha, float);                                //!
@@ -289,8 +338,8 @@ DECLARE_SOA_TABLE(V0PhotonsKF, "AOD", "V0PHOTONKF", //!
                   o2::soa::Index<>, v0photonkf::CollisionId, v0photonkf::PosTrackId, v0photonkf::NegTrackId,
                   v0photonkf::Vx, v0photonkf::Vy, v0photonkf::Vz,
                   v0photonkf::Px, v0photonkf::Py, v0photonkf::Pz,
-                  v0photonkf::MGamma, v0photonkf::MGammaPV,
-                  v0photonkf::DCAxyV0ToPV, v0photonkf::DCAzV0ToPV,
+                  v0photonkf::MGamma,
+                  v0photonkf::DCAxyToPV, v0photonkf::DCAzToPV,
                   v0photonkf::CosPA, v0photonkf::PCA,
                   v0photonkf::Alpha, v0photonkf::QtArm,
                   v0photonkf::ChiSquareNDF,
@@ -319,6 +368,61 @@ DECLARE_SOA_COLUMN(PrefilterBit, pfb, uint8_t);           //!
 DECLARE_SOA_DYNAMIC_COLUMN(Px, px, [](float pt, float phi) -> float { return pt * std::cos(phi); });
 DECLARE_SOA_DYNAMIC_COLUMN(Py, py, [](float pt, float phi) -> float { return pt * std::sin(phi); });
 DECLARE_SOA_DYNAMIC_COLUMN(Pz, pz, [](float pt, float eta) -> float { return pt * std::sinh(eta); });
+DECLARE_SOA_DYNAMIC_COLUMN(DcaXYinSigma, dcaXYinSigma, [](float dcaXY, float cYY) -> float { return dcaXY / std::sqrt(cYY); });
+DECLARE_SOA_DYNAMIC_COLUMN(DcaZinSigma, dcaZinSigma, [](float dcaZ, float cZZ) -> float { return dcaZ / std::sqrt(cZZ); });
+DECLARE_SOA_DYNAMIC_COLUMN(Dca3DinSigma, dca3DinSigma, [](float dcaXY, float dcaZ, float cYY, float cZZ, float cZY) -> float {
+  float det = cYY * cZZ - cZY * cZY; // determinant
+  if (det < 0) {
+    return 999.f;
+  } else {
+    return std::sqrt(std::abs((dcaXY * dcaXY * cZZ + dcaZ * dcaZ * cYY - 2. * dcaXY * dcaZ * cZY) / det / 2.)); // dca 3d in sigma
+  }
+});
+DECLARE_SOA_DYNAMIC_COLUMN(MeanClusterSizeITS, meanClusterSizeITS, [](uint32_t itsClusterSizes) -> float {
+  int total_cluster_size = 0, nl = 0;
+  for (unsigned int layer = 0; layer < 7; layer++) {
+    int cluster_size_per_layer = (itsClusterSizes >> (layer * 4)) & 0xf;
+    if (cluster_size_per_layer > 0) {
+      nl++;
+    }
+    total_cluster_size += cluster_size_per_layer;
+  }
+  if (nl > 0) {
+    return static_cast<float>(total_cluster_size) / static_cast<float>(nl);
+  } else {
+    return 0;
+  }
+});
+DECLARE_SOA_DYNAMIC_COLUMN(MeanClusterSizeITSib, meanClusterSizeITSib, [](uint32_t itsClusterSizes) -> float {
+  int total_cluster_size = 0, nl = 0;
+  for (unsigned int layer = 0; layer < 3; layer++) {
+    int cluster_size_per_layer = (itsClusterSizes >> (layer * 4)) & 0xf;
+    if (cluster_size_per_layer > 0) {
+      nl++;
+    }
+    total_cluster_size += cluster_size_per_layer;
+  }
+  if (nl > 0) {
+    return static_cast<float>(total_cluster_size) / static_cast<float>(nl);
+  } else {
+    return 0;
+  }
+});
+DECLARE_SOA_DYNAMIC_COLUMN(MeanClusterSizeITSob, meanClusterSizeITSob, [](uint32_t itsClusterSizes) -> float {
+  int total_cluster_size = 0, nl = 0;
+  for (unsigned int layer = 3; layer < 7; layer++) {
+    int cluster_size_per_layer = (itsClusterSizes >> (layer * 4)) & 0xf;
+    if (cluster_size_per_layer > 0) {
+      nl++;
+    }
+    total_cluster_size += cluster_size_per_layer;
+  }
+  if (nl > 0) {
+    return static_cast<float>(total_cluster_size) / static_cast<float>(nl);
+  } else {
+    return 0;
+  }
+});
 } // namespace emprimaryelectron
 DECLARE_SOA_TABLE(EMPrimaryElectrons, "AOD", "EMPRIMARYEL", //!
                   o2::soa::Index<>, emprimaryelectron::CollisionId,
@@ -328,19 +432,25 @@ DECLARE_SOA_TABLE(EMPrimaryElectrons, "AOD", "EMPRIMARYEL", //!
                   track::TPCChi2NCl, track::TPCInnerParam,
                   track::TPCSignal, pidtpc::TPCNSigmaEl, pidtpc::TPCNSigmaMu, pidtpc::TPCNSigmaPi, pidtpc::TPCNSigmaKa, pidtpc::TPCNSigmaPr,
                   pidtofbeta::Beta, pidtof::TOFNSigmaEl, pidtof::TOFNSigmaMu, pidtof::TOFNSigmaPi, pidtof::TOFNSigmaKa, pidtof::TOFNSigmaPr,
-                  track::ITSClusterMap, track::ITSChi2NCl, track::DetectorMap, track::Signed1Pt, track::CYY, track::CZZ,
+                  track::ITSClusterSizes, track::ITSChi2NCl, track::DetectorMap, track::Tgl, track::CYY, track::CZZ, track::CZY,
 
                   // dynamic column
                   track::TPCNClsFound<track::TPCNClsFindable, track::TPCNClsFindableMinusFound>,
                   track::TPCNClsCrossedRows<track::TPCNClsFindable, track::TPCNClsFindableMinusCrossedRows>,
                   track::TPCCrossedRowsOverFindableCls<track::TPCNClsFindable, track::TPCNClsFindableMinusCrossedRows>,
                   track::TPCFoundOverFindableCls<track::TPCNClsFindable, track::TPCNClsFindableMinusFound>,
-                  track::ITSNCls<track::ITSClusterMap>,
+                  track::v001::ITSClusterMap<track::ITSClusterSizes>, track::v001::ITSNCls<track::ITSClusterSizes>, track::v001::ITSNClsInnerBarrel<track::ITSClusterSizes>,
                   track::HasITS<track::DetectorMap>, track::HasTPC<track::DetectorMap>,
                   track::HasTRD<track::DetectorMap>, track::HasTOF<track::DetectorMap>,
                   emprimaryelectron::Px<track::Pt, track::Phi>,
                   emprimaryelectron::Py<track::Pt, track::Phi>,
-                  emprimaryelectron::Pz<track::Pt, track::Eta>);
+                  emprimaryelectron::Pz<track::Pt, track::Eta>,
+                  emprimaryelectron::DcaXYinSigma<track::DcaXY, track::CYY>,
+                  emprimaryelectron::DcaZinSigma<track::DcaZ, track::CZZ>,
+                  emprimaryelectron::Dca3DinSigma<track::DcaXY, track::DcaZ, track::CYY, track::CZZ, track::CZY>,
+                  emprimaryelectron::MeanClusterSizeITS<track::ITSClusterSizes>,
+                  emprimaryelectron::MeanClusterSizeITSib<track::ITSClusterSizes>,
+                  emprimaryelectron::MeanClusterSizeITSob<track::ITSClusterSizes>);
 // iterators
 using EMPrimaryElectron = EMPrimaryElectrons::iterator;
 
@@ -362,15 +472,16 @@ DECLARE_SOA_COLUMN(Pt, pt, float);
 DECLARE_SOA_COLUMN(Eta, eta, float);
 DECLARE_SOA_COLUMN(Phi, phi, float);
 DECLARE_SOA_COLUMN(Mass, mass, float);
+DECLARE_SOA_COLUMN(Rapidity, rapidity, float);
 DECLARE_SOA_COLUMN(PhiV, phiv, float);
-DECLARE_SOA_COLUMN(DCAXY, dcaXY, float);
-DECLARE_SOA_COLUMN(DCAZ, dcaZ, float);
+DECLARE_SOA_COLUMN(OpeningAngle, opangle, float);
 DECLARE_SOA_COLUMN(Sign, sign, int);                                                                                                     //!
 DECLARE_SOA_DYNAMIC_COLUMN(Energy, e, [](float pt, float eta, float m) { return RecoDecay::sqrtSumOfSquares(pt * std::cosh(eta), m); }); // e = sqrt(p*p + m*m)
 } // namespace dalitzee
 DECLARE_SOA_TABLE(DalitzEEs, "AOD", "DALITZEE", //!
                   o2::soa::Index<>, dalitzee::CollisionId, dalitzee::PosTrackId, dalitzee::NegTrackId,
-                  dalitzee::Pt, dalitzee::Eta, dalitzee::Phi, dalitzee::Mass, dalitzee::PhiV, dalitzee::DCAXY, dalitzee::DCAZ, dalitzee::Sign,
+                  dalitzee::Pt, dalitzee::Eta, dalitzee::Phi, dalitzee::Mass, dalitzee::Rapidity,
+                  dalitzee::PhiV, dalitzee::OpeningAngle, dalitzee::Sign,
                   dalitzee::Energy<o2::aod::dalitzee::Pt, o2::aod::dalitzee::Eta, o2::aod::dalitzee::Mass>);
 // iterators
 using DalitzEE = DalitzEEs::iterator;
@@ -389,6 +500,61 @@ DECLARE_SOA_COLUMN(PrefilterBit, pfb, uint8_t);           //!
 DECLARE_SOA_DYNAMIC_COLUMN(Px, px, [](float pt, float phi) -> float { return pt * std::cos(phi); });
 DECLARE_SOA_DYNAMIC_COLUMN(Py, py, [](float pt, float phi) -> float { return pt * std::sin(phi); });
 DECLARE_SOA_DYNAMIC_COLUMN(Pz, pz, [](float pt, float eta) -> float { return pt * std::sinh(eta); });
+DECLARE_SOA_DYNAMIC_COLUMN(DcaXYinSigma, dcaXYinSigma, [](float dcaXY, float cYY) -> float { return dcaXY / std::sqrt(cYY); });
+DECLARE_SOA_DYNAMIC_COLUMN(DcaZinSigma, dcaZinSigma, [](float dcaZ, float cZZ) -> float { return dcaZ / std::sqrt(cZZ); });
+DECLARE_SOA_DYNAMIC_COLUMN(Dca3DinSigma, dca3DinSigma, [](float dcaXY, float dcaZ, float cYY, float cZZ, float cZY) -> float {
+  float det = cYY * cZZ - cZY * cZY; // determinant
+  if (det < 0) {
+    return 999.f;
+  } else {
+    return std::sqrt(std::abs((dcaXY * dcaXY * cZZ + dcaZ * dcaZ * cYY - 2. * dcaXY * dcaZ * cZY) / det / 2.)); // dca 3d in sigma
+  }
+});
+DECLARE_SOA_DYNAMIC_COLUMN(MeanClusterSizeITS, meanClusterSizeITS, [](uint32_t itsClusterSizes) -> float {
+  int total_cluster_size = 0, nl = 0;
+  for (unsigned int layer = 0; layer < 7; layer++) {
+    int cluster_size_per_layer = (itsClusterSizes >> (layer * 4)) & 0xf;
+    if (cluster_size_per_layer > 0) {
+      nl++;
+    }
+    total_cluster_size += cluster_size_per_layer;
+  }
+  if (nl > 0) {
+    return static_cast<float>(total_cluster_size) / static_cast<float>(nl);
+  } else {
+    return 0;
+  }
+});
+DECLARE_SOA_DYNAMIC_COLUMN(MeanClusterSizeITSib, meanClusterSizeITSib, [](uint32_t itsClusterSizes) -> float {
+  int total_cluster_size = 0, nl = 0;
+  for (unsigned int layer = 0; layer < 3; layer++) {
+    int cluster_size_per_layer = (itsClusterSizes >> (layer * 4)) & 0xf;
+    if (cluster_size_per_layer > 0) {
+      nl++;
+    }
+    total_cluster_size += cluster_size_per_layer;
+  }
+  if (nl > 0) {
+    return static_cast<float>(total_cluster_size) / static_cast<float>(nl);
+  } else {
+    return 0;
+  }
+});
+DECLARE_SOA_DYNAMIC_COLUMN(MeanClusterSizeITSob, meanClusterSizeITSob, [](uint32_t itsClusterSizes) -> float {
+  int total_cluster_size = 0, nl = 0;
+  for (unsigned int layer = 3; layer < 7; layer++) {
+    int cluster_size_per_layer = (itsClusterSizes >> (layer * 4)) & 0xf;
+    if (cluster_size_per_layer > 0) {
+      nl++;
+    }
+    total_cluster_size += cluster_size_per_layer;
+  }
+  if (nl > 0) {
+    return static_cast<float>(total_cluster_size) / static_cast<float>(nl);
+  } else {
+    return 0;
+  }
+});
 } // namespace emprimarymuon
 DECLARE_SOA_TABLE(EMPrimaryMuons, "AOD", "EMPRIMARYMU", //!
                   o2::soa::Index<>, emprimarymuon::CollisionId,
@@ -398,19 +564,25 @@ DECLARE_SOA_TABLE(EMPrimaryMuons, "AOD", "EMPRIMARYMU", //!
                   track::TPCChi2NCl, track::TPCInnerParam,
                   track::TPCSignal, pidtpc::TPCNSigmaEl, pidtpc::TPCNSigmaMu, pidtpc::TPCNSigmaPi, pidtpc::TPCNSigmaKa, pidtpc::TPCNSigmaPr,
                   pidtofbeta::Beta, pidtof::TOFNSigmaEl, pidtof::TOFNSigmaMu, pidtof::TOFNSigmaPi, pidtof::TOFNSigmaKa, pidtof::TOFNSigmaPr,
-                  track::ITSClusterMap, track::ITSChi2NCl, track::DetectorMap, track::Signed1Pt, track::CYY, track::CZZ,
+                  track::ITSClusterSizes, track::ITSChi2NCl, track::DetectorMap, track::Tgl, track::CYY, track::CZZ, track::CZY,
 
                   // dynamic column
                   track::TPCNClsFound<track::TPCNClsFindable, track::TPCNClsFindableMinusFound>,
                   track::TPCNClsCrossedRows<track::TPCNClsFindable, track::TPCNClsFindableMinusCrossedRows>,
                   track::TPCCrossedRowsOverFindableCls<track::TPCNClsFindable, track::TPCNClsFindableMinusCrossedRows>,
                   track::TPCFoundOverFindableCls<track::TPCNClsFindable, track::TPCNClsFindableMinusFound>,
-                  track::ITSNCls<track::ITSClusterMap>,
+                  track::v001::ITSClusterMap<track::ITSClusterSizes>, track::v001::ITSNCls<track::ITSClusterSizes>, track::v001::ITSNClsInnerBarrel<track::ITSClusterSizes>,
                   track::HasITS<track::DetectorMap>, track::HasTPC<track::DetectorMap>,
                   track::HasTRD<track::DetectorMap>, track::HasTOF<track::DetectorMap>,
                   emprimarymuon::Px<track::Pt, track::Phi>,
                   emprimarymuon::Py<track::Pt, track::Phi>,
-                  emprimarymuon::Pz<track::Pt, track::Eta>);
+                  emprimarymuon::Pz<track::Pt, track::Eta>,
+                  emprimarymuon::DcaXYinSigma<track::DcaXY, track::CYY>,
+                  emprimarymuon::DcaZinSigma<track::DcaZ, track::CZZ>,
+                  emprimarymuon::Dca3DinSigma<track::DcaXY, track::DcaZ, track::CYY, track::CZZ, track::CZY>,
+                  emprimarymuon::MeanClusterSizeITS<track::ITSClusterSizes>,
+                  emprimarymuon::MeanClusterSizeITSib<track::ITSClusterSizes>,
+                  emprimarymuon::MeanClusterSizeITSob<track::ITSClusterSizes>);
 // iterators
 using EMPrimaryMuon = EMPrimaryMuons::iterator;
 
@@ -432,15 +604,16 @@ DECLARE_SOA_COLUMN(Pt, pt, float);
 DECLARE_SOA_COLUMN(Eta, eta, float);
 DECLARE_SOA_COLUMN(Phi, phi, float);
 DECLARE_SOA_COLUMN(Mass, mass, float);
+DECLARE_SOA_COLUMN(Rapidity, rapidity, float);
 DECLARE_SOA_COLUMN(PhiV, phiv, float);
-DECLARE_SOA_COLUMN(DCAXY, dcaXY, float);
-DECLARE_SOA_COLUMN(DCAZ, dcaZ, float);
+DECLARE_SOA_COLUMN(OpeningAngle, opangle, float);
 DECLARE_SOA_COLUMN(Sign, sign, int);                                                                                                     //!
 DECLARE_SOA_DYNAMIC_COLUMN(Energy, e, [](float pt, float eta, float m) { return RecoDecay::sqrtSumOfSquares(pt * std::cosh(eta), m); }); // e = sqrt(p*p + m*m)
 } // namespace dalitzmumu
 DECLARE_SOA_TABLE(DalitzMuMus, "AOD", "DALITZMUMU", //!
                   o2::soa::Index<>, dalitzmumu::CollisionId, dalitzmumu::PosTrackId, dalitzmumu::NegTrackId,
-                  dalitzmumu::Pt, dalitzmumu::Eta, dalitzmumu::Phi, dalitzmumu::Mass, dalitzmumu::PhiV, dalitzmumu::DCAXY, dalitzmumu::DCAZ, dalitzmumu::Sign,
+                  dalitzmumu::Pt, dalitzmumu::Eta, dalitzmumu::Phi, dalitzmumu::Mass, dalitzmumu::Rapidity,
+                  dalitzmumu::PhiV, dalitzmumu::OpeningAngle, dalitzmumu::Sign,
                   dalitzmumu::Energy<o2::aod::dalitzmumu::Pt, o2::aod::dalitzmumu::Eta, o2::aod::dalitzmumu::Mass>);
 // iterators
 using DalitzMuMu = DalitzMuMus::iterator;
@@ -448,6 +621,30 @@ using DalitzMuMu = DalitzMuMus::iterator;
 DECLARE_SOA_TABLE(DalitzMuMuEMReducedEventIds, "AOD", "MUMUEMEVENTID", dalitzmumu::EMReducedEventId); // To be joined with DalitzMuMus table at analysis level.
 // iterators
 using DalitzMuMuEMReducedEventId = DalitzMuMuEMReducedEventIds::iterator;
+
+namespace pwgem::photon::swtinfo
+{
+DECLARE_SOA_INDEX_COLUMN(EMReducedEvent, emreducedevent);                                                                //!
+DECLARE_SOA_COLUMN(CollisionId, collisionId, int);                                                                       //!
+DECLARE_SOA_INDEX_COLUMN_FULL(TriggerV0PhotonHighPt, triggerV0PhotonHighPt, int, V0PhotonsKF, "_TriggerV0PhotonHighPt"); //! high pT PCM trigger is fired by this v0 photon
+DECLARE_SOA_INDEX_COLUMN_FULL(TriggerV0PhotonPair, triggerV0PhotonPair, int, V0PhotonsKF, "_TriggerV0PhotonPair");       //! PCM+EE trigger is fired by this v0 photon and dielectron
+DECLARE_SOA_INDEX_COLUMN_FULL(TriggerDielectronPair, triggerDielectronPair, int, DalitzEEs, "_TriggerDielectronPair");   //! PCM+EE trigger is fired by this v0 photon and dielectron
+} // namespace pwgem::photon::swtinfo
+DECLARE_SOA_TABLE(EMSwtInfosPCM, "AOD", "SWTINFOPCM", //!
+                  o2::soa::Index<>, pwgem::photon::swtinfo::CollisionId, pwgem::photon::swtinfo::TriggerV0PhotonHighPtId);
+using EMSwtInfoPCM = EMSwtInfosPCM::iterator;
+
+DECLARE_SOA_TABLE(EMSwtInfoPCMEMReducedEventIds, "AOD", "SWTPCMEVENTID", pwgem::photon::swtinfo::EMReducedEventId, o2::soa::Marker<1>); // To be joined with EMSwtInfosPCM table at analysis level.
+// iterators
+using EMSwtInfoPCMEMReducedEventId = EMSwtInfoPCMEMReducedEventIds::iterator;
+
+DECLARE_SOA_TABLE(EMSwtInfosPair, "AOD", "SWTINFOPAIR", //!
+                  o2::soa::Index<>, pwgem::photon::swtinfo::CollisionId, pwgem::photon::swtinfo::TriggerV0PhotonPairId, pwgem::photon::swtinfo::TriggerDielectronPairId);
+using EMSwtInfoPair = EMSwtInfosPair::iterator;
+
+DECLARE_SOA_TABLE(EMSwtInfoPairEMReducedEventIds, "AOD", "SWTPAIREVENTID", pwgem::photon::swtinfo::EMReducedEventId, o2::soa::Marker<2>); // To be joined with EMSwtInfosPair table at analysis level.
+// iterators
+using EMSwtInfoPairEMReducedEventId = EMSwtInfoPairEMReducedEventIds::iterator;
 
 namespace MCTracksTrue
 {
@@ -470,20 +667,6 @@ DECLARE_SOA_INDEX_COLUMN(V0DaughterMcParticle, v0DaughterMcParticle);
 
 // DECLARE_SOA_INDEX_TABLE_USER(MCTrackIndex, V0MCDaughterParticles, "MCTRACKINDEX", MCParticleTrueIndex::V0DaughterTrackId);
 DECLARE_SOA_TABLE(MCParticleIndex, "AOD", "MCPARTICLEINDEX", MCParticleTrueIndex::V0DaughterMcParticleId);
-
-namespace v0Recalculations
-{
-DECLARE_SOA_COLUMN(RecalculatedVtxX, recalculatedVtxX, float); //! Recalculated conversion point
-DECLARE_SOA_COLUMN(RecalculatedVtxY, recalculatedVtxY, float); //! Recalculated conversion point
-DECLARE_SOA_COLUMN(RecalculatedVtxZ, recalculatedVtxZ, float); //! Recalculated conversion point
-DECLARE_SOA_DYNAMIC_COLUMN(RecalculatedVtxR, recalculatedVtxR, [](float x, float y) { return sqrt(x * x + y * y); });
-} // namespace v0Recalculations
-
-DECLARE_SOA_TABLE(V0Recalculation, "AOD", "V0RECALC",
-                  v0Recalculations::RecalculatedVtxX,
-                  v0Recalculations::RecalculatedVtxY,
-                  v0Recalculations::RecalculatedVtxZ,
-                  v0Recalculations::RecalculatedVtxR<o2::aod::v0Recalculations::RecalculatedVtxX, o2::aod::v0Recalculations::RecalculatedVtxY>);
 
 namespace gammamctrue
 {

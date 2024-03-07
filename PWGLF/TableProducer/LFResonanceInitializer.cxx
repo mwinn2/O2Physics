@@ -23,6 +23,8 @@
 #include "Common/Core/trackUtilities.h"
 #include "Common/DataModel/EventSelection.h"
 #include "Common/DataModel/TrackSelectionTables.h"
+#include "Common/DataModel/Qvectors.h"
+#include "Common/Core/EventPlaneHelper.h"
 #include "Framework/ASoAHelpers.h"
 #include "DetectorsBase/Propagator.h"
 #include "Framework/AnalysisDataModel.h"
@@ -82,10 +84,9 @@ struct reso2initializer {
   Configurable<bool> cfgFatalWhenNull{"cfgFatalWhenNull", true, "Fatal when null on ccdb access"};
 
   // Configurables
-  Configurable<bool> ConfIsRun3{"ConfIsRun3", true, "Running on Pilot beam"}; // Choose if running on converted data or pilot beam
   Configurable<double> d_bz_input{"d_bz", -999, "bz field, -999 is automatic"};
   Configurable<bool> ConfFillQA{"ConfFillQA", false, "Fill QA histograms"};
-  Configurable<bool> ConfBypassCCDB{"ConfBypassCCDB", false, "Bypass loading CCDB part to save CPU time and memory"}; // will be affected to b_z value.
+  Configurable<bool> ConfBypassCCDB{"ConfBypassCCDB", true, "Bypass loading CCDB part to save CPU time and memory"}; // will be affected to b_z value.
 
   // Track filter from tpcSkimsTableCreator
   Configurable<int> trackSelection{"trackSelection", 0, "Track selection: 0 -> No Cut, 1 -> kGlobalTrack, 2 -> kGlobalTrackWoPtEta, 3 -> kGlobalTrackWoDCA, 4 -> kQualityTracks, 5 -> kInAcceptanceTracks"};
@@ -102,8 +103,13 @@ struct reso2initializer {
   Configurable<bool> ConfEvtTriggerCheck{"ConfEvtTriggerCheck", false, "Evt sel: check for trigger"};
   Configurable<int> ConfEvtTriggerSel{"ConfEvtTriggerSel", 8, "Evt sel: trigger"};
   Configurable<bool> ConfEvtOfflineCheck{"ConfEvtOfflineCheck", true, "Evt sel: check for offline selection"};
+  Configurable<bool> ConfEvtTFBorderCut{"ConfEvtTFBorderCut", false, "Evt sel: apply TF border cut"};
 
   Configurable<std::string> cfgMultName{"cfgMultName", "FT0M", "The name of multiplicity estimator"};
+
+  // Qvector configuration
+  Configurable<bool> ConfBypassQvec{"ConfBypassQvec", true, "Bypass for qvector task"};
+  Configurable<int> cfgEvtPl{"cfgEvtPl", 40500, "Configuration of three subsystems for the event plane and its resolution, 10000*RefA + 100*RefB + S, where FT0C:0, FT0A:1, FT0M:2, FV0A:3, BPos:5, BNeg:6"};
 
   // Pre-selection cuts
   Configurable<float> cfgCutEta{"cfgCutEta", 0.8f, "Eta range for tracks"};
@@ -151,6 +157,12 @@ struct reso2initializer {
   Filter trackEtaFilter = nabs(aod::track::eta) < cfgCutEta;                                                                                                                                                 // Eta cut
   Filter collisionFilter = nabs(aod::collision::posZ) < ConfEvtZvtx;
 
+  EventPlaneHelper helperEP;
+
+  int EvtPlRefAId = static_cast<int>(cfgEvtPl / 10000);
+  int EvtPlRefBId = static_cast<int>((cfgEvtPl - EvtPlRefAId * 10000) / 100);
+  int EvtPlDetId = cfgEvtPl - EvtPlRefAId * 10000 - EvtPlRefBId * 100;
+
   // MC Resonance parent filter
   Partition<aod::McParticles> selectedMCParticles = (nabs(aod::mcparticle::pdgCode) == 313)        // K*
                                                     || (nabs(aod::mcparticle::pdgCode) == 323)     // K*pm
@@ -168,8 +180,10 @@ struct reso2initializer {
                                                     || (nabs(aod::mcparticle::pdgCode) == 123314)  // Xi(1820)0
                                                     || (nabs(aod::mcparticle::pdgCode) == 123324); // Xi(1820)-0
 
-  using ResoEvents = soa::Join<aod::Collisions, aod::EvSels, aod::FT0Mults, aod::FV0Mults, aod::CentFV0As, aod::CentFT0Ms, aod::CentFT0Cs, aod::CentFT0As>;
+  using ResoEvents = soa::Join<aod::Collisions, aod::EvSels, aod::CentFV0As, aod::CentFT0Ms, aod::CentFT0Cs, aod::CentFT0As>;
+  using ResoRun2Events = soa::Join<aod::Collisions, aod::EvSels, aod::CentRun2V0Ms>;
   using ResoEventsMC = soa::Join<ResoEvents, aod::McCollisionLabels>;
+  using ResoRun2EventsMC = soa::Join<ResoEvents, aod::McCollisionLabels>;
   using ResoTracks = aod::Reso2TracksPIDExt;
   using ResoTracksMC = soa::Join<ResoTracks, aod::McTrackLabels>;
   using ResoV0s = aod::V0Datas;
@@ -325,34 +339,19 @@ struct reso2initializer {
     switch (multEstimator) {
       case 0:
         returnValue = ResoEvents.centFT0M();
+        break;
       case 1:
         returnValue = ResoEvents.centFT0C();
+        break;
       case 2:
         returnValue = ResoEvents.centFT0A();
+        break;
       case 99:
         returnValue = ResoEvents.centFV0A();
+        break;
       default:
         returnValue = ResoEvents.centFT0M();
-    }
-    return returnValue;
-  }
-
-  // Multiplicity estimator selection
-  template <typename ResoColl>
-  float MultEst(ResoColl ResoEvents)
-  {
-    float returnValue = -999.0;
-    switch (multEstimator) {
-      case 0:
-        returnValue = ResoEvents.multFT0M();
-      case 1:
-        returnValue = ResoEvents.multFT0C();
-      case 2:
-        returnValue = ResoEvents.multFT0A();
-      case 99:
-        returnValue = ResoEvents.multFV0A();
-      default:
-        returnValue = ResoEvents.multFT0M();
+        break;
     }
     return returnValue;
   }
@@ -408,6 +407,25 @@ struct reso2initializer {
     }
 
     return TMath::Power(TMath::Pi() / 2., 2) * tempSph;
+  }
+
+  template <typename ResoColl>
+  float GetEvtPl(ResoColl ResoEvents)
+  {
+    float returnValue = -999.0;
+    if (ResoEvents.qvecAmp()[EvtPlDetId] > 1e-8)
+      returnValue = helperEP.GetEventPlane(ResoEvents.qvecRe()[EvtPlDetId * 4 + 3], ResoEvents.qvecIm()[EvtPlDetId * 4 + 3], 2);
+    return returnValue;
+  }
+
+  template <typename ResoColl>
+  float GetEvtPlRes(ResoColl ResoEvents, int a, int b)
+  {
+    float returnValue = -999.0;
+    if (ResoEvents.qvecAmp()[a] < 1e-8 || ResoEvents.qvecAmp()[b] < 1e-8)
+      return returnValue;
+    returnValue = helperEP.GetResolution(helperEP.GetEventPlane(ResoEvents.qvecRe()[a * 4 + 3], ResoEvents.qvecIm()[a * 4 + 3], 2), helperEP.GetEventPlane(ResoEvents.qvecRe()[b * 4 + 3], ResoEvents.qvecIm()[b * 4 + 3], 2), 2);
+    return returnValue;
   }
 
   // Filter for all tracks
@@ -472,7 +490,13 @@ struct reso2initializer {
                v0.phi(),
                childIDs,
                v0.v0cosPA(),
-               v0.dcaV0daughters(), v0.mLambda(), v0.mAntiLambda(),
+               v0.dcaV0daughters(),
+               v0.dcapostopv(),
+               v0.dcanegtopv(),
+               v0.dcav0topv(),
+               v0.mLambda(),
+               v0.mAntiLambda(),
+               v0.mK0Short(),
                v0.v0radius(), v0.x(), v0.y(), v0.z());
       if constexpr (isMC) {
         fillMCV0(v0);
@@ -484,12 +508,13 @@ struct reso2initializer {
   template <bool isMC, typename CollisionType, typename CascType, typename TrackType>
   void fillCascades(CollisionType const& collision, CascType const& cascades, TrackType const& tracks)
   {
-    int childIDs[2] = {0, 0}; // these IDs are necessary to keep track of the children
+    int childIDs[3] = {0, 0, 0}; // these IDs are necessary to keep track of the children
     for (auto& casc : cascades) {
       if (!IsCascSelected<isMC>(collision, casc, tracks))
         continue;
-      childIDs[0] = casc.v0Id();
-      childIDs[1] = casc.bachelorId();
+      childIDs[0] = casc.posTrackId();
+      childIDs[1] = casc.negTrackId();
+      childIDs[2] = casc.bachelorId();
       reso2cascades(resoCollisions.lastIndex(),
                     casc.pt(),
                     casc.px(),
@@ -500,7 +525,15 @@ struct reso2initializer {
                     childIDs,
                     casc.v0cosPA(collision.posX(), collision.posY(), collision.posZ()),
                     casc.casccosPA(collision.posX(), collision.posY(), collision.posZ()),
-                    casc.dcaV0daughters(), casc.dcacascdaughters(), casc.mXi(),
+                    casc.dcaV0daughters(),
+                    casc.dcacascdaughters(),
+                    casc.dcapostopv(),
+                    casc.dcanegtopv(),
+                    casc.dcabachtopv(),
+                    casc.dcav0topv(collision.posX(), collision.posY(), collision.posZ()),
+                    casc.dcaXYCascToPV(),
+                    casc.dcaZCascToPV(),
+                    casc.mXi(),
                     casc.v0radius(), casc.cascradius(), casc.x(), casc.y(), casc.z());
       if constexpr (isMC) {
         fillMCCascade(casc);
@@ -799,8 +832,23 @@ struct reso2initializer {
       multEstimator = 0;
     }
 
-    colCuts.setCuts(ConfEvtZvtx, ConfEvtTriggerCheck, ConfEvtTriggerSel, ConfEvtOfflineCheck, ConfIsRun3);
+    // Check if we are running multiple processes at the same time
+    int nProcesses = doprocessTrackDataRun2 + doprocessTrackV0DataRun2 + doprocessTrackV0CascDataRun2 +
+                     doprocessMCGenCountRun2 + doprocessTrackMCRun2 + doprocessTrackV0MCRun2 +
+                     doprocessTrackV0CascMCRun2;
+
+    if (nProcesses > 1) {
+      LOG(fatal) << "Multiple processes are not supported at the same time";
+    }
+
+    // Case selector based on the process.
+    if (doprocessTrackDataRun2 || doprocessTrackV0DataRun2 || doprocessTrackV0CascDataRun2 || doprocessMCGenCountRun2 || doprocessTrackMCRun2 || doprocessTrackV0MCRun2 || doprocessTrackV0CascMCRun2) {
+      colCuts.setCuts(ConfEvtZvtx, ConfEvtTriggerCheck, ConfEvtTriggerSel, ConfEvtOfflineCheck, false);
+    } else if (doprocessTrackData || doprocessTrackV0Data || doprocessTrackV0CascData || doprocessMCGenCount || doprocessTrackMC || doprocessTrackV0MC || doprocessTrackV0CascMC) {
+      colCuts.setCuts(ConfEvtZvtx, ConfEvtTriggerCheck, ConfEvtTriggerSel, ConfEvtOfflineCheck, true);
+    }
     colCuts.init(&qaRegistry);
+    colCuts.setApplyTFBorderCut(ConfEvtTFBorderCut);
     if (!ConfBypassCCDB) {
       ccdb->setURL(ccdburl.value);
       ccdb->setCaching(true);
@@ -886,15 +934,45 @@ struct reso2initializer {
       return;
     colCuts.fillQA(collision);
 
-    if (ConfIsRun3) {
-      resoCollisions(collision.posX(), collision.posY(), collision.posZ(), CentEst(collision), MultEst(collision), ComputeSpherocity(tracks, trackSphMin, trackSphDef), d_bz, bc.timestamp());
-    } else {
-      resoCollisions(collision.posX(), collision.posY(), collision.posZ(), collision.multFV0M(), MultEst(collision), ComputeSpherocity(tracks, trackSphMin, trackSphDef), d_bz, bc.timestamp());
-    }
+    resoCollisions(collision.posX(), collision.posY(), collision.posZ(), CentEst(collision), ComputeSpherocity(tracks, trackSphMin, trackSphDef), 0., 0., 0., 0., d_bz, bc.timestamp());
 
     fillTracks<false>(collision, tracks);
   }
   PROCESS_SWITCH(reso2initializer, processTrackData, "Process for data", true);
+
+  void processTrackDataRun2(soa::Filtered<ResoRun2Events>::iterator const& collision,
+                            soa::Filtered<ResoTracks> const& tracks,
+                            aod::BCsWithTimestamps const&)
+  {
+    auto bc = collision.bc_as<aod::BCsWithTimestamps>(); /// adding timestamp to access magnetic field later
+    initCCDB(bc);
+    // Default event selection
+    if (!colCuts.isSelected(collision))
+      return;
+    colCuts.fillQARun2(collision);
+
+    resoCollisions(collision.posX(), collision.posY(), collision.posZ(), collision.centRun2V0M(), ComputeSpherocity(tracks, trackSphMin, trackSphDef), 0., 0., 0., 0., d_bz, bc.timestamp());
+
+    fillTracks<false>(collision, tracks);
+  }
+  PROCESS_SWITCH(reso2initializer, processTrackDataRun2, "Process for data", false);
+
+  void processTrackEPData(soa::Filtered<soa::Join<ResoEvents, aod::Qvectors>>::iterator const& collision,
+                          soa::Filtered<ResoTracks> const& tracks,
+                          aod::BCsWithTimestamps const&)
+  {
+    auto bc = collision.bc_as<aod::BCsWithTimestamps>(); /// adding timestamp to access magnetic field later
+    initCCDB(bc);
+    // Default event selection
+    if (!colCuts.isSelected(collision))
+      return;
+    colCuts.fillQA(collision);
+
+    resoCollisions(collision.posX(), collision.posY(), collision.posZ(), CentEst(collision), ComputeSpherocity(tracks, trackSphMin, trackSphDef), GetEvtPl(collision), GetEvtPlRes(collision, EvtPlDetId, EvtPlRefAId), GetEvtPlRes(collision, EvtPlDetId, EvtPlRefBId), GetEvtPlRes(collision, EvtPlRefAId, EvtPlRefBId), d_bz, bc.timestamp());
+
+    fillTracks<false>(collision, tracks);
+  }
+  PROCESS_SWITCH(reso2initializer, processTrackEPData, "Process for data and ep ana", false);
 
   PresliceUnsorted<ResoEventsMC> perMcCol = aod::mccollisionlabel::mcCollisionId;
   void processMCGenCount(aod::McCollisions const& mccollisions, aod::McParticles const& mcParticles, ResoEventsMC const& mcCols)
@@ -951,6 +1029,61 @@ struct reso2initializer {
   }
   PROCESS_SWITCH(reso2initializer, processMCGenCount, "Process for MC", false);
 
+  PresliceUnsorted<ResoRun2EventsMC> perMcColRun2 = aod::mccollisionlabel::mcCollisionId;
+  void processMCGenCountRun2(aod::McCollisions const& mccollisions, aod::McParticles const& mcParticles, ResoRun2EventsMC const& mcCols)
+  {
+    // Mainly referenced from dndeta_hi task in PWG-MM PAG-Multiplicity (Beomkyu Kim)
+    for (auto& mcCollision : mccollisions) { // Gen MC Event loop
+      auto particles = mcParticles.sliceByCached(aod::mcparticle::mcCollisionId, mcCollision.globalIndex(), cache);
+      std::vector<Bool_t> bevtc(kECend, false);
+      bevtc[kINEL] = true;
+      auto posZ = mcCollision.posZ();
+      if (std::abs(posZ) < 10)
+        bevtc[kINEL10] = true;
+      for (auto& particle : particles) {
+        if (!particle.isPhysicalPrimary())
+          continue;
+        auto kp = pdg->GetParticle(particle.pdgCode());
+        if (kp != nullptr) {
+          if (std::abs(kp->Charge()) >= 3) {    // 3 quarks
+            if (std::abs(particle.eta()) < 1) { // INEL>0 definition
+              bevtc[kINELg0] = true;
+              break;
+            }
+          }
+        }
+      }
+      if (bevtc[kINELg0] && bevtc[kINEL10])
+        bevtc[kINELg010] = true;
+
+      for (auto ievtc = 1u; ievtc < kECend; ievtc++) {
+        if (bevtc[ievtc])
+          qaRegistry.fill(HIST("Event/totalEventGenMC"), Double_t(ievtc));
+      }
+
+      auto collisionsample = mcCols.sliceBy(perMcColRun2, mcCollision.globalIndex());
+      float cent = -1.0;
+      if (collisionsample.size() != 1) { // Prevent no reconstructed collision case
+        cent = -1;
+      } else {
+        for (auto& collision : collisionsample) {
+          cent = CentEst(collision);
+          if (collision.sel7())
+            bevtc[kTrig] = true;
+        }
+      }
+      if (bevtc[kTrig] && bevtc[kINELg0])
+        bevtc[kINELg0Trig] = true;
+      if (bevtc[kINELg0Trig] && bevtc[kINEL10])
+        bevtc[kINELg010Trig] = true;
+      for (auto ievtc = 1u; ievtc < kECend; ievtc++) {
+        if (bevtc[ievtc])
+          qaRegistry.fill(HIST("Event/hgenzvtx"), Double_t(ievtc), posZ, cent);
+      }
+    }
+  }
+  PROCESS_SWITCH(reso2initializer, processMCGenCountRun2, "Process for MC", false);
+
   void processTrackV0Data(soa::Filtered<ResoEvents>::iterator const& collision,
                           soa::Filtered<ResoTracks> const& tracks,
                           ResoV0s const& V0s,
@@ -963,16 +1096,31 @@ struct reso2initializer {
       return;
     colCuts.fillQA(collision);
 
-    if (ConfIsRun3) {
-      resoCollisions(collision.posX(), collision.posY(), collision.posZ(), CentEst(collision), MultEst(collision), ComputeSpherocity(tracks, trackSphMin, trackSphDef), d_bz, bc.timestamp());
-    } else {
-      resoCollisions(collision.posX(), collision.posY(), collision.posZ(), collision.multFV0M(), MultEst(collision), ComputeSpherocity(tracks, trackSphMin, trackSphDef), d_bz, bc.timestamp());
-    }
+    resoCollisions(collision.posX(), collision.posY(), collision.posZ(), CentEst(collision), ComputeSpherocity(tracks, trackSphMin, trackSphDef), 0., 0., 0., 0., d_bz, bc.timestamp());
 
     fillTracks<false>(collision, tracks);
     fillV0s<false>(collision, V0s, tracks);
   }
   PROCESS_SWITCH(reso2initializer, processTrackV0Data, "Process for data", false);
+
+  void processTrackV0DataRun2(soa::Filtered<ResoRun2Events>::iterator const& collision,
+                              soa::Filtered<ResoTracks> const& tracks,
+                              ResoV0s const& V0s,
+                              aod::BCsWithTimestamps const&)
+  {
+    auto bc = collision.bc_as<aod::BCsWithTimestamps>(); /// adding timestamp to access magnetic field later
+    initCCDB(bc);
+    // Default event selection
+    if (!colCuts.isSelected(collision))
+      return;
+    colCuts.fillQARun2(collision);
+
+    resoCollisions(collision.posX(), collision.posY(), collision.posZ(), collision.centRun2V0M(), ComputeSpherocity(tracks, trackSphMin, trackSphDef), 0., 0., 0., 0., d_bz, bc.timestamp());
+
+    fillTracks<false>(collision, tracks);
+    fillV0s<false>(collision, V0s, tracks);
+  }
+  PROCESS_SWITCH(reso2initializer, processTrackV0DataRun2, "Process for data", false);
 
   void processTrackV0CascData(soa::Filtered<ResoEvents>::iterator const& collision,
                               soa::Filtered<ResoTracks> const& tracks,
@@ -987,17 +1135,34 @@ struct reso2initializer {
       return;
     colCuts.fillQA(collision);
 
-    if (ConfIsRun3) {
-      resoCollisions(collision.posX(), collision.posY(), collision.posZ(), CentEst(collision), MultEst(collision), ComputeSpherocity(tracks, trackSphMin, trackSphDef), d_bz, bc.timestamp());
-    } else {
-      resoCollisions(collision.posX(), collision.posY(), collision.posZ(), collision.multFV0M(), MultEst(collision), ComputeSpherocity(tracks, trackSphMin, trackSphDef), d_bz, bc.timestamp());
-    }
+    resoCollisions(collision.posX(), collision.posY(), collision.posZ(), CentEst(collision), ComputeSpherocity(tracks, trackSphMin, trackSphDef), 0., 0., 0., 0., d_bz, bc.timestamp());
 
     fillTracks<false>(collision, tracks);
     fillV0s<false>(collision, V0s, tracks);
     fillCascades<false>(collision, Cascades, tracks);
   }
   PROCESS_SWITCH(reso2initializer, processTrackV0CascData, "Process for data", false);
+
+  void processTrackV0CascDataRun2(soa::Filtered<ResoRun2Events>::iterator const& collision,
+                                  soa::Filtered<ResoTracks> const& tracks,
+                                  ResoV0s const& V0s,
+                                  ResoCascades const& Cascades,
+                                  aod::BCsWithTimestamps const&)
+  {
+    auto bc = collision.bc_as<aod::BCsWithTimestamps>(); /// adding timestamp to access magnetic field later
+    initCCDB(bc);
+    // Default event selection
+    if (!colCuts.isSelected(collision))
+      return;
+    colCuts.fillQARun2(collision);
+
+    resoCollisions(collision.posX(), collision.posY(), collision.posZ(), collision.centRun2V0M(), ComputeSpherocity(tracks, trackSphMin, trackSphDef), 0., 0., 0., 0., d_bz, bc.timestamp());
+
+    fillTracks<false>(collision, tracks);
+    fillV0s<false>(collision, V0s, tracks);
+    fillCascades<false>(collision, Cascades, tracks);
+  }
+  PROCESS_SWITCH(reso2initializer, processTrackV0CascDataRun2, "Process for data", false);
 
   Preslice<aod::McParticles> perMcCollision = aod::mcparticle::mcCollisionId;
   void processTrackMC(soa::Filtered<soa::Join<ResoEvents, aod::McCollisionLabels>>::iterator const& collision,
@@ -1010,11 +1175,7 @@ struct reso2initializer {
       return;
     colCuts.fillQA(collision);
 
-    if (ConfIsRun3) {
-      resoCollisions(collision.posX(), collision.posY(), collision.posZ(), CentEst(collision), MultEst(collision), ComputeSpherocity(tracks, trackSphMin, trackSphDef), d_bz, bc.timestamp());
-    } else {
-      resoCollisions(collision.posX(), collision.posY(), collision.posZ(), collision.multFV0M(), MultEst(collision), ComputeSpherocity(tracks, trackSphMin, trackSphDef), d_bz, bc.timestamp());
-    }
+    resoCollisions(collision.posX(), collision.posY(), collision.posZ(), CentEst(collision), ComputeSpherocity(tracks, trackSphMin, trackSphDef), 0., 0., 0., 0., d_bz, bc.timestamp());
 
     // Loop over tracks
     fillTracks<true>(collision, tracks);
@@ -1024,6 +1185,28 @@ struct reso2initializer {
     fillMCParticles(mcParts, mcParticles);
   }
   PROCESS_SWITCH(reso2initializer, processTrackMC, "Process for MC", false);
+
+  Preslice<aod::McParticles> perMcCollisionRun2 = aod::mcparticle::mcCollisionId;
+  void processTrackMCRun2(soa::Filtered<soa::Join<ResoRun2Events, aod::McCollisionLabels>>::iterator const& collision,
+                          aod::McCollisions const& mcCols, soa::Filtered<ResoTracksMC> const& tracks,
+                          aod::McParticles const& mcParticles, aod::BCsWithTimestamps const& bcs)
+  {
+    auto bc = collision.bc_as<aod::BCsWithTimestamps>(); /// adding timestamp to access magnetic field later
+    initCCDB(bc);
+    if (!colCuts.isSelected(collision))
+      return;
+    colCuts.fillQARun2(collision);
+
+    resoCollisions(collision.posX(), collision.posY(), collision.posZ(), collision.centRun2V0M(), ComputeSpherocity(tracks, trackSphMin, trackSphDef), 0., 0., 0., 0., d_bz, bc.timestamp());
+
+    // Loop over tracks
+    fillTracks<true>(collision, tracks);
+
+    // Loop over all MC particles
+    auto mcParts = selectedMCParticles->sliceBy(perMcCollisionRun2, collision.mcCollision().globalIndex());
+    fillMCParticles(mcParts, mcParticles);
+  }
+  PROCESS_SWITCH(reso2initializer, processTrackMCRun2, "Process for MC", false);
 
   void processTrackV0MC(soa::Filtered<soa::Join<ResoEvents, aod::McCollisionLabels>>::iterator const& collision,
                         aod::McCollisions const& mcCols, soa::Filtered<ResoTracksMC> const& tracks,
@@ -1036,11 +1219,7 @@ struct reso2initializer {
       return;
     colCuts.fillQA(collision);
 
-    if (ConfIsRun3) {
-      resoCollisions(collision.posX(), collision.posY(), collision.posZ(), CentEst(collision), MultEst(collision), ComputeSpherocity(tracks, trackSphMin, trackSphDef), d_bz, bc.timestamp());
-    } else {
-      resoCollisions(collision.posX(), collision.posY(), collision.posZ(), collision.multFV0M(), MultEst(collision), ComputeSpherocity(tracks, trackSphMin, trackSphDef), d_bz, bc.timestamp());
-    }
+    resoCollisions(collision.posX(), collision.posY(), collision.posZ(), CentEst(collision), ComputeSpherocity(tracks, trackSphMin, trackSphDef), 0., 0., 0., 0., d_bz, bc.timestamp());
 
     // Loop over tracks
     fillTracks<true>(collision, tracks);
@@ -1051,6 +1230,29 @@ struct reso2initializer {
     fillMCParticles(mcParts, mcParticles);
   }
   PROCESS_SWITCH(reso2initializer, processTrackV0MC, "Process for MC", false);
+
+  void processTrackV0MCRun2(soa::Filtered<soa::Join<ResoRun2Events, aod::McCollisionLabels>>::iterator const& collision,
+                            aod::McCollisions const& mcCols, soa::Filtered<ResoTracksMC> const& tracks,
+                            ResoV0sMC const& V0s,
+                            aod::McParticles const& mcParticles, aod::BCsWithTimestamps const& bcs)
+  {
+    auto bc = collision.bc_as<aod::BCsWithTimestamps>(); /// adding timestamp to access magnetic field later
+    initCCDB(bc);
+    if (!colCuts.isSelected(collision))
+      return;
+    colCuts.fillQARun2(collision);
+
+    resoCollisions(collision.posX(), collision.posY(), collision.posZ(), collision.centRun2V0M(), ComputeSpherocity(tracks, trackSphMin, trackSphDef), 0., 0., 0., 0., d_bz, bc.timestamp());
+
+    // Loop over tracks
+    fillTracks<true>(collision, tracks);
+    fillV0s<true>(collision, V0s, tracks);
+
+    // Loop over all MC particles
+    auto mcParts = selectedMCParticles->sliceBy(perMcCollision, collision.mcCollision().globalIndex());
+    fillMCParticles(mcParts, mcParticles);
+  }
+  PROCESS_SWITCH(reso2initializer, processTrackV0MCRun2, "Process for MC", false);
 
   void processTrackV0CascMC(soa::Filtered<soa::Join<ResoEvents, aod::McCollisionLabels>>::iterator const& collision,
                             aod::McCollisions const& mcCols, soa::Filtered<ResoTracksMC> const& tracks,
@@ -1064,11 +1266,7 @@ struct reso2initializer {
       return;
     colCuts.fillQA(collision);
 
-    if (ConfIsRun3) {
-      resoCollisions(collision.posX(), collision.posY(), collision.posZ(), CentEst(collision), MultEst(collision), ComputeSpherocity(tracks, trackSphMin, trackSphDef), d_bz, bc.timestamp());
-    } else {
-      resoCollisions(collision.posX(), collision.posY(), collision.posZ(), collision.multFV0M(), MultEst(collision), ComputeSpherocity(tracks, trackSphMin, trackSphDef), d_bz, bc.timestamp());
-    }
+    resoCollisions(collision.posX(), collision.posY(), collision.posZ(), CentEst(collision), ComputeSpherocity(tracks, trackSphMin, trackSphDef), 0., 0., 0., 0., d_bz, bc.timestamp());
 
     // Loop over tracks
     fillTracks<true>(collision, tracks);
@@ -1081,6 +1279,32 @@ struct reso2initializer {
     fillMCParticles(mcParts, mcParticles);
   }
   PROCESS_SWITCH(reso2initializer, processTrackV0CascMC, "Process for MC", false);
+
+  void processTrackV0CascMCRun2(soa::Filtered<soa::Join<ResoRun2Events, aod::McCollisionLabels>>::iterator const& collision,
+                                aod::McCollisions const& mcCols, soa::Filtered<ResoTracksMC> const& tracks,
+                                ResoV0sMC const& V0s,
+                                ResoCascadesMC const& Cascades,
+                                aod::McParticles const& mcParticles, aod::BCsWithTimestamps const& bcs)
+  {
+    auto bc = collision.bc_as<aod::BCsWithTimestamps>(); /// adding timestamp to access magnetic field later
+    initCCDB(bc);
+    if (!colCuts.isSelected(collision))
+      return;
+    colCuts.fillQARun2(collision);
+
+    resoCollisions(collision.posX(), collision.posY(), collision.posZ(), collision.centRun2V0M(), ComputeSpherocity(tracks, trackSphMin, trackSphDef), 0., 0., 0., 0., d_bz, bc.timestamp());
+
+    // Loop over tracks
+    fillTracks<true>(collision, tracks);
+    fillV0s<true>(collision, V0s, tracks);
+    fillV0s<true>(collision, V0s, tracks);
+    fillCascades<true>(collision, Cascades, tracks);
+
+    // Loop over all MC particles
+    auto mcParts = selectedMCParticles->sliceBy(perMcCollision, collision.mcCollision().globalIndex());
+    fillMCParticles(mcParts, mcParticles);
+  }
+  PROCESS_SWITCH(reso2initializer, processTrackV0CascMCRun2, "Process for MC", false);
 };
 
 WorkflowSpec defineDataProcessing(ConfigContext const& cfgc)

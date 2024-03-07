@@ -48,6 +48,7 @@ struct cascqaanalysis {
   // Event selection criteria
   Configurable<float> cutzvertex{"cutzvertex", 20.0f, "Accepted z-vertex range (cm)"};
   Configurable<bool> sel8{"sel8", 1, "Apply sel8 event selection"};
+  Configurable<bool> isTimeFrameBorderCut{"isTimeFrameBorderCut", 1, "Apply timeframe border cut"};
 
   // Cascade selection criteria
   Configurable<float> scalefactor{"scalefactor", 1.0, "Scaling factor"};
@@ -108,7 +109,7 @@ struct cascqaanalysis {
 
     TString hCandidateCounterLabels[5] = {"All candidates", "v0data exists", "passed topo cuts", "has associated MC particle", "associated with Xi(Omega)"};
     TString hNEventsMCLabels[6] = {"All", "z vrtx", "INEL", "INEL>0", "INEL>1", "Associated with rec. collision"};
-    TString hNEventsLabels[6] = {"All", "sel8", "z vrtx", "INEL", "INEL>0", "INEL>1"};
+    TString hNEventsLabels[7] = {"All", "sel8", "TimeFrame cut", "z vrtx", "INEL", "INEL>0", "INEL>1"};
 
     registry.add("hNEvents", "hNEvents", {HistType::kTH1F, {{6, 0.f, 6.f}}});
     for (Int_t n = 1; n <= registry.get<TH1>(HIST("hNEvents"))->GetNbinsX(); n++) {
@@ -125,7 +126,7 @@ struct cascqaanalysis {
       registry.add("hNchFT0MPVContr", "hNchFT0MPVContr", {HistType::kTH3F, {nChargedFT0MGenAxis, multNTracksAxis, eventTypeAxis}});
       registry.add("hNchFV0APVContr", "hNchFV0APVContr", {HistType::kTH3F, {nChargedFV0AGenAxis, multNTracksAxis, eventTypeAxis}});
       // Gen. lvl
-      registry.add("hNEventsMC", "hNEventsMC", {HistType::kTH1F, {{6, 0.0f, 6.0f}}});
+      registry.add("hNEventsMC", "hNEventsMC", {HistType::kTH1F, {{7, 0.0f, 7.0f}}});
       for (Int_t n = 1; n <= registry.get<TH1>(HIST("hNEventsMC"))->GetNbinsX(); n++) {
         registry.get<TH1>(HIST("hNEventsMC"))->GetXaxis()->SetBinLabel(n, hNEventsMCLabels[n - 1]);
       }
@@ -166,15 +167,13 @@ struct cascqaanalysis {
   bool AcceptCascCandidate(TCascade const& cascCand, float const& pvx, float const& pvy, float const& pvz)
   {
     // Access daughter tracks
-    auto v0index = cascCand.template v0_as<o2::aod::V0sLinked>();
-    auto v0 = v0index.v0Data();
-    auto posdau = v0.template posTrack_as<TCascTracksTo>();
-    auto negdau = v0.template negTrack_as<TCascTracksTo>();
+    auto posdau = cascCand.template posTrack_as<TCascTracksTo>();
+    auto negdau = cascCand.template negTrack_as<TCascTracksTo>();
     auto bachelor = cascCand.template bachelor_as<TCascTracksTo>();
 
     // Basic set of selections
     if (cascCand.cascradius() > cascradius &&
-        v0.v0radius() > v0radius &&
+        cascCand.v0radius() > v0radius &&
         cascCand.casccosPA(pvx, pvy, pvz) > casccospa &&
         cascCand.v0cosPA(pvx, pvy, pvz) > v0cospa &&
         TMath::Abs(posdau.eta()) < etadau &&
@@ -239,14 +238,14 @@ struct cascqaanalysis {
   {
     // 0 - INEL, 1 - INEL > 0, 2 - INEL>1
     int evFlag = 0;
-    registry.fill(HIST("hNEvents"), 3.5); // INEL
+    registry.fill(HIST("hNEvents"), 4.5); // INEL
     if (collision.multNTracksPVeta1() > 0) {
       evFlag += 1;
-      registry.fill(HIST("hNEvents"), 4.5); // INEL>0
+      registry.fill(HIST("hNEvents"), 5.5); // INEL>0
     }
     if (collision.multNTracksPVeta1() > 1) {
       evFlag += 1;
-      registry.fill(HIST("hNEvents"), 5.5); // INEL>1
+      registry.fill(HIST("hNEvents"), 6.5); // INEL>1
     }
     return evFlag;
   }
@@ -265,12 +264,20 @@ struct cascqaanalysis {
       registry.fill(HIST("hNEvents"), 1.5);
     }
 
+    if (isTimeFrameBorderCut && !collision.selection_bit(aod::evsel::kNoTimeFrameBorder)) {
+      return false;
+    }
+
+    if (isFillEventSelectionQA) {
+      registry.fill(HIST("hNEvents"), 2.5);
+    }
+
     // Z vertex selection
     if (TMath::Abs(collision.posZ()) > cutzvertex) {
       return false;
     }
     if (isFillEventSelectionQA) {
-      registry.fill(HIST("hNEvents"), 2.5);
+      registry.fill(HIST("hNEvents"), 3.5);
       registry.fill(HIST("hZCollision"), collision.posZ());
     }
 
@@ -323,7 +330,6 @@ struct cascqaanalysis {
                              aod::PVMults, aod::FT0Mults, aod::FV0Mults,
                              aod::CentFT0Ms, aod::CentFV0As>::iterator const& collision,
                    soa::Filtered<aod::CascDataExt> const& Cascades,
-                   aod::V0sLinked const&,
                    aod::V0Datas const&,
                    DauTracks const&)
   {
@@ -352,21 +358,14 @@ struct cascqaanalysis {
 
     for (const auto& casc : Cascades) {              // loop over Cascades
       registry.fill(HIST("hCandidateCounter"), 0.5); // all candidates
-
-      // Access daughter tracks
-      auto v0index = casc.v0_as<o2::aod::V0sLinked>();
-      if (!(v0index.has_v0Data())) {
-        return; // skip those cascades for which V0 doesn't exist
-      }
-      registry.fill(HIST("hCandidateCounter"), 1.5); // v0data exists
+      registry.fill(HIST("hCandidateCounter"), 1.5); // v0data exists, deprecated
 
       if (AcceptCascCandidate<DauTracks>(casc, collision.posX(), collision.posY(), collision.posZ())) {
         registry.fill(HIST("hCandidateCounter"), 2.5); // passed topo cuts
         // Fill table
         if (fRand->Rndm() < lEventScale) {
-          auto v0 = v0index.v0Data();
-          auto posdau = v0.posTrack_as<DauTracks>();
-          auto negdau = v0.negTrack_as<DauTracks>();
+          auto posdau = casc.posTrack_as<DauTracks>();
+          auto negdau = casc.negTrack_as<DauTracks>();
           auto bachelor = casc.bachelor_as<DauTracks>();
 
           // ITS N hits
@@ -423,8 +422,7 @@ struct cascqaanalysis {
                     soa::Filtered<LabeledCascades> const& Cascades,
                     DauTracks const&,
                     aod::McCollisions const&,
-                    aod::McParticles const& mcParticles,
-                    aod::V0sLinked const&)
+                    aod::McParticles const& mcParticles)
   {
     if (!AcceptEvent(collision, 1)) {
       return;
@@ -455,13 +453,7 @@ struct cascqaanalysis {
 
     for (const auto& casc : Cascades) {              // loop over Cascades
       registry.fill(HIST("hCandidateCounter"), 0.5); // all candidates
-      // Access daughter tracks
-      auto v0index = casc.v0_as<o2::aod::V0sLinked>();
-      if (!(v0index.has_v0Data())) {
-        return; // skip those cascades for which V0 doesn't exist
-      }
-
-      registry.fill(HIST("hCandidateCounter"), 1.5); // v0data exists
+      registry.fill(HIST("hCandidateCounter"), 1.5); // v0data exists - deprecated
 
       if (AcceptCascCandidate<DauTracks>(casc, collision.posX(), collision.posY(), collision.posZ())) {
         registry.fill(HIST("hCandidateCounter"), 2.5); // passed topo cuts
@@ -479,9 +471,8 @@ struct cascqaanalysis {
         }
         if (fRand->Rndm() < lEventScale) {
           // Fill table
-          auto v0 = v0index.v0Data();
-          auto posdau = v0.posTrack_as<DauTracks>();
-          auto negdau = v0.negTrack_as<DauTracks>();
+          auto posdau = casc.posTrack_as<DauTracks>();
+          auto negdau = casc.negTrack_as<DauTracks>();
           auto bachelor = casc.bachelor_as<DauTracks>();
 
           // ITS N hits

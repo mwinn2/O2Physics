@@ -61,12 +61,15 @@ struct HfFilterCharmHadronSignals { // Main struct for HF triggers
   Configurable<LabeledArray<double>> thresholdBDTScoreLcToPiKP{"thresholdBDTScoreLcToPiKP", {hf_cuts_bdt_multiclass::cuts[0], hf_cuts_bdt_multiclass::nBinsPt, hf_cuts_bdt_multiclass::nCutBdtScores, hf_cuts_bdt_multiclass::labelsPt, hf_cuts_bdt_multiclass::labelsCutBdt}, "Threshold values for BDT output scores of Lc+ candidates"};
   Configurable<std::string> onnxFileXicToPiKPConf{"onnxFileXicToPiKPConf", "", "ONNX file for ML model for Xic+ candidates"};
   Configurable<LabeledArray<double>> thresholdBDTScoreXicToPiKP{"thresholdBDTScoreXicToPiKP", {hf_cuts_bdt_multiclass::cuts[0], hf_cuts_bdt_multiclass::nBinsPt, hf_cuts_bdt_multiclass::nCutBdtScores, hf_cuts_bdt_multiclass::labelsPt, hf_cuts_bdt_multiclass::labelsCutBdt}, "Threshold values for BDT output scores of Xic+ candidates"};
+  Configurable<std::string> paramCharmMassShape{"paramCharmMassShape", "2023_pass3", "Parametrisation of charm-hadron mass shape (options: 2023_pass3)"};
+  Configurable<float> numSigmaDeltaMassCharmHad{"numSigmaDeltaMassCharmHad", 2.5, "Number of sigma for charm-hadron delta mass cut in B and D resonance triggers"};
 
   // additional selections for D*
   Configurable<float> minPtSoftPion{"minPtSoftPion", static_cast<float>(cutsPt[0][1]), "minimum pT for soft pion tracks in D*+ -> D0pi decay"};
   Configurable<float> maxPtSoftPion{"maxPtSoftPion", static_cast<float>(cutsPt[1][1]), "maximum pT for soft pion tracks in D*+ -> D0pi decay"};
   Configurable<float> maxDeltaMassDstar{"maxDeltaMassDstar", static_cast<float>(cutsMassCharmReso[0][0]), "maximum invariant-mass delta for D*+ in GeV/c2"};
-  Configurable<float> maxDeltaMassDzeroFromDstar{"maxDeltaMassDzeroFromDstar", static_cast<float>(cutsDeltaMassB[0][kNBeautyParticles]), "maximum invariant-mass delta for D0 in D*+ -> D0pi decay"};
+  Configurable<std::vector<double>> pTBinsTrack{"pTBinsTrack", std::vector<double>{hf_cuts_single_track::vecBinsPtTrack}, "track pT bin limits for DCAXY pT-dependent cut (D* from beauty)"};
+  Configurable<LabeledArray<double>> cutsTrackBeauty3Prong{"cutsTrackBeauty3Prong", {hf_cuts_single_track::cutsTrack[0], hf_cuts_single_track::nBinsPtTrack, hf_cuts_single_track::nCutVarsTrack, hf_cuts_single_track::labelsPtTrack, hf_cuts_single_track::labelsCutVarTrack}, "Single-track selections per pT bin for 3-prong beauty candidates"};
 
   // CCDB configuration
   o2::ccdb::CcdbApi ccdbApi;
@@ -92,14 +95,14 @@ struct HfFilterCharmHadronSignals { // Main struct for HF triggers
   std::array<LabeledArray<double>, kNCharmParticles> thresholdBDTScores;
 
   ConfigurableAxis pvContributorsAxis{"pvContributorsAxis", {250, 0.f, 250.f}, "PV contributors"};
-  ConfigurableAxis multiplicityAxis{"multiplicityAxis", {100, 0.f, 100.f}, "MultFT0M"};
+  ConfigurableAxis multiplicityAxis{"multiplicityAxis", {100, 0.f, 1000.f}, "MultFT0M"};
   ConfigurableAxis zVtxAxis{"zVtxAxis", {150, -15.f, 15.f}, "#it{z}_{vtx} (cm)"};
   ConfigurableAxis invMassDmesAxis = {"invMassDmesAxis", {300, 1.65f, 2.25f}, "inv. mass (GeV/#it{c}^{2})"};
   ConfigurableAxis invMassDstarAxis = {"invMassDstarAxis", {180, 0.f, 0.18f}, "inv. mass difference (GeV/#it{c}^{2})"};
   ConfigurableAxis invMassCbaryonAxis = {"invMassCbaryonAxis", {300, 2.05f, 2.65f}, "inv. mass (GeV/#it{c}^{2})"};
   ConfigurableAxis ptAxis = {"ptAxis", {100, 0.f, 50.f}, "#it{p}_{T} (GeV/#it{c})"};
   ConfigurableAxis yAxis = {"yAxis", {10, -1.f, 1.f}, "#it{y}"};
-  ConfigurableAxis phiAxis = {"phiAxis", {90, -constants::math::PI, constants::math::PI}, "#varphi (rad)"};
+  ConfigurableAxis phiAxis = {"phiAxis", {90, 0., constants::math::TwoPI}, "#varphi (rad)"};
   ConfigurableAxis bdtPromptAxis{"bdtPromptAxis", {100, 0.f, 1.f}, "BDT prompt"};
   ConfigurableAxis bdtNonPromptAxis{"bdtNonPromptAxis", {100, 0.f, 1.f}, "BDT nonprompt"};
 
@@ -114,9 +117,10 @@ struct HfFilterCharmHadronSignals { // Main struct for HF triggers
   void init(InitContext&)
   {
     helper.setPtLimitsDstarSoftPion(minPtSoftPion, maxPtSoftPion);
-    helper.setPtBinsSingleTracks(std::vector<double>{hf_cuts_single_track::vecBinsPtTrack});
-    helper.setCutsSingleTrackBeauty(cutsSingleTrackDummy, cutsSingleTrackDummy);
-    helper.setDeltaMassCharmHadForBeauty(maxDeltaMassDzeroFromDstar);
+    helper.setPtBinsSingleTracks(pTBinsTrack);
+    helper.setCutsSingleTrackBeauty(cutsTrackBeauty3Prong, cutsTrackBeauty3Prong);
+    helper.setMassResolParametrisation(paramCharmMassShape);
+    helper.setNumSigmaForDeltaMassCharmHadCut(numSigmaDeltaMassCharmHad);
 
     ccdb->setURL(url.value);
     ccdb->setCaching(true);
@@ -239,7 +243,7 @@ struct HfFilterCharmHadronSignals { // Main struct for HF triggers
             LOG(fatal) << "Error running model inference for D0: Unexpected input data type.";
           }
 
-          if (!TESTBIT(tagBDT, RecoDecay::OriginType::Prompt) && !TESTBIT(tagBDT, RecoDecay::OriginType::NonPrompt)) { // if not tagged neither as prompt nor nonprompt, we skip
+          if (!TESTBIT(tagBDT, RecoDecay::OriginType::None)) { // if not signal, we skip
             continue;
           }
         }
@@ -279,7 +283,7 @@ struct HfFilterCharmHadronSignals { // Main struct for HF triggers
             o2::base::Propagator::Instance()->propagateToDCABxByBz({collision.posX(), collision.posY(), collision.posZ()}, trackParThird, 2.f, noMatCorr, &dcaThird);
             getPxPyPz(trackParThird, pVecThird);
           }
-          auto isTrackSelected = helper.isSelectedTrackForSoftPionOrBeauty(track, trackParThird, dcaThird, 2);
+          auto isTrackSelected = helper.isSelectedTrackForSoftPionOrBeauty(track, trackParThird, dcaThird, kBeauty3P);
           if (TESTBIT(isTrackSelected, kSoftPion)) {
             std::array<float, 2> massDausD0{massPi, massKa};
             auto invMassD0dau = invMassD0;
@@ -358,6 +362,7 @@ struct HfFilterCharmHadronSignals { // Main struct for HF triggers
           }
         }
 
+        std::array<int8_t, kNCharmParticles - 1> isSignalTagged = is3Prong;
         std::array<int8_t, kNCharmParticles - 1> isCharmTagged = is3Prong;
         std::array<int8_t, kNCharmParticles - 1> isBeautyTagged = is3Prong;
         float scoresToFill[kNCharmParticles - 1][3];
@@ -365,6 +370,7 @@ struct HfFilterCharmHadronSignals { // Main struct for HF triggers
           std::fill_n(scoresToFill[i], 3, -1);
         } // initialize BDT scores array outside ML loop
         if (applyML) {
+          isSignalTagged = std::array<int8_t, kNCharmParticles - 1>{0};
           isCharmTagged = std::array<int8_t, kNCharmParticles - 1>{0};
           isBeautyTagged = std::array<int8_t, kNCharmParticles - 1>{0};
 
@@ -392,12 +398,13 @@ struct HfFilterCharmHadronSignals { // Main struct for HF triggers
               LOG(error) << "Error running model inference for " << charmParticleNames[iCharmPart + 1].data() << ": Unexpected input data type.";
             }
 
+            isSignalTagged[iCharmPart] = TESTBIT(tagBDT, RecoDecay::OriginType::None);
             isCharmTagged[iCharmPart] = TESTBIT(tagBDT, RecoDecay::OriginType::Prompt);
             isBeautyTagged[iCharmPart] = TESTBIT(tagBDT, RecoDecay::OriginType::NonPrompt);
           }
         }
 
-        if (!std::accumulate(isCharmTagged.begin(), isCharmTagged.end(), 0) && !std::accumulate(isBeautyTagged.begin(), isBeautyTagged.end(), 0)) {
+        if (!std::accumulate(isSignalTagged.begin(), isSignalTagged.end(), 0)) {
           continue;
         }
 

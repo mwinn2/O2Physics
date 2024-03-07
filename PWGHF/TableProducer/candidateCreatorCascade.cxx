@@ -31,6 +31,7 @@
 
 using namespace o2;
 using namespace o2::analysis;
+using namespace o2::aod::hf_collision_centrality;
 using namespace o2::constants::physics;
 using namespace o2::framework;
 
@@ -38,6 +39,9 @@ using namespace o2::framework;
 struct HfCandidateCreatorCascade {
   Produces<aod::HfCandCascBase> rowCandidateBase;
 
+  // centrality
+  Configurable<float> centralityMin{"centralityMin", 0., "Minimum centrality"};
+  Configurable<float> centralityMax{"centralityMax", 100., "Maximum centrality"};
   // vertexing
   // Configurable<double> bz{"bz", 5., "magnetic field"};
   Configurable<bool> propagateToPCA{"propagateToPCA", true, "create tracks version propagated to PCA"};
@@ -56,6 +60,7 @@ struct HfCandidateCreatorCascade {
   Configurable<std::string> ccdbPathGrp{"ccdbPathGrp", "GLO/GRP/GRP", "Path of the grp file (Run 2)"};
   Configurable<std::string> ccdbPathGrpMag{"ccdbPathGrpMag", "GLO/Config/GRPMagField", "CCDB path of the GRPMagField object (Run 3)"};
 
+  o2::vertexing::DCAFitterN<2> df; // 2-prong vertex fitter
   Service<o2::ccdb::BasicCCDBManager> ccdb;
   o2::base::MatLayerCylSet* lut;
   o2::base::Propagator::MatCorrType matCorr = o2::base::Propagator::MatCorrType::USEMatCorrLUT;
@@ -74,26 +79,16 @@ struct HfCandidateCreatorCascade {
 
   void init(InitContext const&)
   {
+    std::array<bool, 3> processes = {doprocessNoCent, doprocessCentFT0C, doprocessCentFT0M};
+    if (std::accumulate(processes.begin(), processes.end(), 0) != 1) {
+      LOGP(fatal, "One and only one process function must be enabled at a time.");
+    }
+
     massP = MassProton;
     massK0s = MassK0Short;
     massPi = MassPiPlus;
     massLc = MassLambdaCPlus;
-    ccdb->setURL(ccdbUrl);
-    ccdb->setCaching(true);
-    ccdb->setLocalObjectValidityChecking();
-    lut = o2::base::MatLayerCylSet::rectifyPtrFromFile(ccdb->get<o2::base::MatLayerCylSet>(ccdbPathLut));
-    runNumber = 0;
-  }
 
-  void process(aod::Collisions const&,
-               aod::HfCascades const& rowsTrackIndexCasc,
-               aod::TracksWCov const&,
-               aod::V0sLinked const&,
-               aod::V0Datas const&,
-               aod::BCsWithTimestamps const&)
-  {
-    // 2-prong vertex fitter
-    o2::vertexing::DCAFitterN<2> df;
     // df.setBz(bz);
     df.setPropagateToPCA(propagateToPCA);
     df.setMaxR(maxR);
@@ -103,8 +98,40 @@ struct HfCandidateCreatorCascade {
     df.setUseAbsDCA(useAbsDCA);
     df.setWeightedFinalPCA(useWeightedFinalPCA);
 
+    ccdb->setURL(ccdbUrl);
+    ccdb->setCaching(true);
+    ccdb->setLocalObjectValidityChecking();
+    lut = o2::base::MatLayerCylSet::rectifyPtrFromFile(ccdb->get<o2::base::MatLayerCylSet>(ccdbPathLut));
+    runNumber = 0;
+  }
+
+  template <int centEstimator, typename Coll>
+  void runCreatorCascade(Coll const&,
+                         aod::HfCascades const& rowsTrackIndexCasc,
+                         aod::V0sLinked const&,
+                         aod::V0Datas const&,
+                         aod::V0fCDatas const&,
+                         aod::TracksWCov const&,
+                         aod::BCsWithTimestamps const&)
+  {
     // loop over pairs of track indices
     for (const auto& casc : rowsTrackIndexCasc) {
+
+      // reject candidates in collisions outside the centrality range
+      auto collision = casc.template collision_as<Coll>();
+      float centrality = -1.;
+      if constexpr (centEstimator != CentralityEstimator::None) {
+        if constexpr (centEstimator == CentralityEstimator::FT0C) {
+          centrality = collision.centFT0C();
+        } else if constexpr (centEstimator == CentralityEstimator::FT0M) {
+          centrality = collision.centFT0M();
+        } else {
+          LOGP(fatal, "Centrality estimator different from FT0C and FT0M, fix it!");
+        }
+        if (centrality < centralityMin || centrality > centralityMax) {
+          continue;
+        }
+      }
 
       const auto& bach = casc.prong0_as<aod::TracksWCov>();
       LOGF(debug, "V0 %d in HF cascade %d.", casc.v0Id(), casc.globalIndex());
@@ -112,23 +139,79 @@ struct HfCandidateCreatorCascade {
         LOGF(error, "V0 not there for HF cascade %d. Skipping candidate.", casc.globalIndex());
         continue;
       }
-      if (!casc.v0_as<aod::V0sLinked>().has_v0Data()) {
-        if (!silenceV0DataWarning) {
-          LOGF(warning, "V0Data not there for V0 %d in HF cascade %d. Skipping candidate.", casc.v0Id(), casc.globalIndex());
-        }
-        continue;
-      }
-      LOGF(debug, "V0Data ID: %d", casc.v0_as<aod::V0sLinked>().v0DataId());
-      const auto& v0 = casc.v0_as<aod::V0sLinked>().v0Data();
-      const auto& trackV0DaughPos = v0.posTrack_as<aod::TracksWCov>();
-      const auto& trackV0DaughNeg = v0.negTrack_as<aod::TracksWCov>();
 
-      auto collision = casc.collision();
+      int posGlobalIndex = -1, negGlobalIndex = -1;
+      float v0x, v0y, v0z, v0px, v0py, v0pz;
+      float v0PosPx, v0PosPy, v0PosPz, v0NegPx, v0NegPy, v0NegPz;
+      float dcaV0dau, dcaPosToPV, dcaNegToPV, v0cosPA;
+      float posTrackX, negTrackX;
+      o2::track::TrackParCov trackParCovV0DaughPos;
+      o2::track::TrackParCov trackParCovV0DaughNeg;
+
+      auto v0index = casc.v0_as<o2::aod::V0sLinked>();
+      if (v0index.has_v0Data()) {
+        // this V0 passed both standard V0 and cascade V0 selections
+        auto v0row = v0index.v0Data();
+        const auto& trackV0DaughPos = v0row.posTrack_as<aod::TracksWCov>();
+        const auto& trackV0DaughNeg = v0row.negTrack_as<aod::TracksWCov>();
+        trackParCovV0DaughPos = getTrackParCov(trackV0DaughPos); // check that aod::TracksWCov does not need TracksDCA!
+        trackParCovV0DaughNeg = getTrackParCov(trackV0DaughNeg); // check that aod::TracksWCov does not need TracksDCA!
+        posGlobalIndex = trackV0DaughPos.globalIndex();
+        negGlobalIndex = trackV0DaughNeg.globalIndex();
+        v0x = v0row.x();
+        v0y = v0row.y();
+        v0z = v0row.z();
+        v0px = v0row.px();
+        v0py = v0row.py();
+        v0pz = v0row.pz();
+        v0PosPx = v0row.pxpos();
+        v0PosPy = v0row.pypos();
+        v0PosPz = v0row.pzpos();
+        v0NegPx = v0row.pxneg();
+        v0NegPy = v0row.pyneg();
+        v0NegPz = v0row.pzneg();
+        dcaV0dau = v0row.dcaV0daughters();
+        dcaPosToPV = v0row.dcapostopv();
+        dcaNegToPV = v0row.dcanegtopv();
+        v0cosPA = v0row.v0cosPA();
+        posTrackX = v0row.posX();
+        negTrackX = v0row.negX();
+      } else if (v0index.has_v0fCData()) {
+        // this V0 passes only V0-for-cascade selections, use that instead
+        auto v0row = v0index.v0fCData();
+        const auto& trackV0DaughPos = v0row.posTrack_as<aod::TracksWCov>();
+        const auto& trackV0DaughNeg = v0row.negTrack_as<aod::TracksWCov>();
+        trackParCovV0DaughPos = getTrackParCov(trackV0DaughPos); // check that aod::TracksWCov does not need TracksDCA!
+        trackParCovV0DaughNeg = getTrackParCov(trackV0DaughNeg); // check that aod::TracksWCov does not need TracksDCA!
+        posGlobalIndex = trackV0DaughPos.globalIndex();
+        negGlobalIndex = trackV0DaughNeg.globalIndex();
+        v0x = v0row.x();
+        v0y = v0row.y();
+        v0z = v0row.z();
+        v0px = v0row.px();
+        v0py = v0row.py();
+        v0pz = v0row.pz();
+        v0PosPx = v0row.pxpos();
+        v0PosPy = v0row.pypos();
+        v0PosPz = v0row.pzpos();
+        v0NegPx = v0row.pxneg();
+        v0NegPy = v0row.pyneg();
+        v0NegPz = v0row.pzneg();
+        dcaV0dau = v0row.dcaV0daughters();
+        dcaPosToPV = v0row.dcapostopv();
+        dcaNegToPV = v0row.dcanegtopv();
+        v0cosPA = v0row.v0cosPA();
+        posTrackX = v0row.posX();
+        negTrackX = v0row.negX();
+      } else {
+        LOGF(warning, "V0Data/V0fCData not there for V0 %d in HF cascade %d. Skipping candidate.", casc.v0Id(), casc.globalIndex());
+        continue; // this was inadequately linked, should not happen
+      }
 
       /// Set the magnetic field from ccdb.
       /// The static instance of the propagator was already modified in the HFTrackIndexSkimCreator,
       /// but this is not true when running on Run2 data/MC already converted into AO2Ds.
-      auto bc = collision.bc_as<aod::BCsWithTimestamps>();
+      auto bc = collision.template bc_as<aod::BCsWithTimestamps>();
       if (runNumber != bc.runNumber()) {
         initCCDB(bc, runNumber, ccdb, isRun2 ? ccdbPathGrp : ccdbPathGrpMag, lut, isRun2);
         bz = o2::base::Propagator::Instance()->getNominalBz();
@@ -137,12 +220,10 @@ struct HfCandidateCreatorCascade {
       df.setBz(bz);
 
       auto trackParCovBach = getTrackParCov(bach);
-      auto trackParCovV0DaughPos = getTrackParCov(trackV0DaughPos); // check that aod::TracksWCov does not need TracksDCA!
-      auto trackParCovV0DaughNeg = getTrackParCov(trackV0DaughNeg); // check that aod::TracksWCov does not need TracksDCA!
-      trackParCovV0DaughPos.propagateTo(v0.posX(), bz);             // propagate the track to the X closest to the V0 vertex
-      trackParCovV0DaughNeg.propagateTo(v0.negX(), bz);             // propagate the track to the X closest to the V0 vertex
-      const std::array<float, 3> vertexV0 = {v0.x(), v0.y(), v0.z()};
-      const std::array<float, 3> momentumV0 = {v0.px(), v0.py(), v0.pz()};
+      trackParCovV0DaughPos.propagateTo(posTrackX, bz); // propagate the track to the X closest to the V0 vertex
+      trackParCovV0DaughNeg.propagateTo(negTrackX, bz); // propagate the track to the X closest to the V0 vertex
+      const std::array<float, 3> vertexV0 = {v0x, v0y, v0z};
+      const std::array<float, 3> momentumV0 = {v0px, v0py, v0pz};
       // we build the neutral track to then build the cascade
       auto trackV0 = o2::dataformats::V0(vertexV0, momentumV0, {0, 0, 0, 0, 0, 0}, trackParCovV0DaughPos, trackParCovV0DaughNeg); // build the V0 track (indices for v0 daughters set to 0 for now)
 
@@ -194,15 +275,15 @@ struct HfCandidateCreatorCascade {
                        impactParameterBach.getY(), impactParameterV0.getY(),
                        std::sqrt(impactParameterBach.getSigmaY2()), std::sqrt(impactParameterV0.getSigmaY2()),
                        casc.prong0Id(), casc.v0Id(),
-                       v0.x(), v0.y(), v0.z(),
+                       v0x, v0y, v0z,
                        // v0.posTrack(), v0.negTrack(), // why this was not fine?
-                       trackV0DaughPos.globalIndex(), trackV0DaughNeg.globalIndex(),
-                       v0.pxpos(), v0.pypos(), v0.pzpos(),
-                       v0.pxneg(), v0.pyneg(), v0.pzneg(),
-                       v0.dcaV0daughters(),
-                       v0.dcapostopv(),
-                       v0.dcanegtopv(),
-                       v0.v0cosPA());
+                       posGlobalIndex, negGlobalIndex,
+                       v0PosPx, v0PosPy, v0PosPz,
+                       v0NegPx, v0NegPy, v0NegPz,
+                       dcaV0dau,
+                       dcaPosToPV,
+                       dcaNegToPV,
+                       v0cosPA);
 
       // fill histograms
       if (fillHistograms) {
@@ -211,7 +292,48 @@ struct HfCandidateCreatorCascade {
         hMass2->Fill(mass2K0sP);
       }
     }
+
+    return;
   }
+
+  /// @brief process function w/o centrality selections
+  void processNoCent(aod::Collisions const& collisions,
+                     aod::HfCascades const& rowsTrackIndexCasc,
+                     aod::V0sLinked const& v0sLinked,
+                     aod::V0Datas const& v0Data,
+                     aod::V0fCDatas const& v0fCDatas,
+                     aod::TracksWCov const& tracks,
+                     aod::BCsWithTimestamps const& bcs)
+  {
+    runCreatorCascade<CentralityEstimator::None>(collisions, rowsTrackIndexCasc, v0sLinked, v0Data, v0fCDatas, tracks, bcs);
+  }
+  PROCESS_SWITCH(HfCandidateCreatorCascade, processNoCent, " Run candidate creator w/o centrality selections", true);
+
+  /// @brief process function w/ centrality selection on FT0C
+  void processCentFT0C(soa::Join<aod::Collisions, aod::CentFT0Cs> const& collisions,
+                       aod::HfCascades const& rowsTrackIndexCasc,
+                       aod::V0sLinked const& v0sLinked,
+                       aod::V0Datas const& v0Data,
+                       aod::V0fCDatas const& v0fCDatas,
+                       aod::TracksWCov const& tracks,
+                       aod::BCsWithTimestamps const& bcs)
+  {
+    runCreatorCascade<CentralityEstimator::FT0C>(collisions, rowsTrackIndexCasc, v0sLinked, v0Data, v0fCDatas, tracks, bcs);
+  }
+  PROCESS_SWITCH(HfCandidateCreatorCascade, processCentFT0C, " Run candidate creator w/ centrality selection on FT0C", false);
+
+  /// @brief process function w/ centrality selection on FT0M
+  void processCentFT0M(soa::Join<aod::Collisions, aod::CentFT0Ms> const& collisions,
+                       aod::HfCascades const& rowsTrackIndexCasc,
+                       aod::V0sLinked const& v0sLinked,
+                       aod::V0Datas const& v0Data,
+                       aod::V0fCDatas const& v0fCDatas,
+                       aod::TracksWCov const& tracks,
+                       aod::BCsWithTimestamps const& bcs)
+  {
+    runCreatorCascade<CentralityEstimator::FT0M>(collisions, rowsTrackIndexCasc, v0sLinked, v0Data, v0fCDatas, tracks, bcs);
+  }
+  PROCESS_SWITCH(HfCandidateCreatorCascade, processCentFT0M, " Run candidate creator w/ centrality selection on FT0M", false);
 };
 
 /// Performs MC matching.

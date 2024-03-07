@@ -36,17 +36,31 @@ class DGSelector
     return 1;
   }
 
-  // Function to check if collisions passes DG filter
+  // Function to check if collision passes DG filter
   template <typename CC, typename BCs, typename TCs, typename FWs>
   int IsSelected(DGCutparHolder diffCuts, CC& collision, BCs& bcRange, TCs& tracks, FWs& fwdtracks)
   {
     LOGF(debug, "Collision %f", collision.collisionTime());
     LOGF(debug, "Number of close BCs: %i", bcRange.size());
 
-    // check that there are no FIT signals in any of the compatible BCs
+    // return if FIT veto is found in any of the compatible BCs
     // Double Gap (DG) condition
+    // 4 types of vetoes:
+    //  0 TVX
+    //  1 TSC
+    //  2 TCE
+    //  3 TOR
     for (auto const& bc : bcRange) {
-      if (!udhelpers::cleanFIT(bc, diffCuts.maxFITtime(), diffCuts.FITAmpLimits())) {
+      /* for debuging
+      auto isVetoed = udhelpers::FITveto(bc, diffCuts);
+      auto isClean = udhelpers::cleanFIT(bc, diffCuts.maxFITtime(), diffCuts.FITAmpLimits());
+      LOGF(info, "<IsSelected> isVetoed: %d isClean: %d", isVetoed, isClean);
+      if (isVetoed) {
+        return 1;
+      }
+      */
+
+      if (udhelpers::FITveto(bc, diffCuts)) {
         return 1;
       }
     }
@@ -55,7 +69,7 @@ class DGSelector
     LOGF(debug, "FwdTracks %i", fwdtracks.size());
     if (!diffCuts.withFwdTracks()) {
       for (auto& fwdtrack : fwdtracks) {
-        LOGF(info, "  %i / %f / %f / %f / %f", fwdtrack.trackType(), fwdtrack.eta(), fwdtrack.pt(), fwdtrack.p(), fwdtrack.trackTimeRes());
+        LOGF(debug, "  %i / %f / %f / %f / %f", fwdtrack.trackType(), fwdtrack.eta(), fwdtrack.pt(), fwdtrack.p(), fwdtrack.trackTimeRes());
         // only consider tracks with MID (good timing)
         if (fwdtrack.trackType() == 0 || fwdtrack.trackType() == 3) {
           return 2;
@@ -149,10 +163,15 @@ class DGSelector
   template <typename BCs, typename TCs, typename FWs>
   int IsSelected(DGCutparHolder diffCuts, BCs& bcRange, TCs& tracks, FWs& fwdtracks)
   {
-    // check that there are no FIT signals in bcRange
+    // return if FIT veto is found in any of the compatible BCs
     // Double Gap (DG) condition
+    // 4 types of vetoes:
+    //  0 TVX
+    //  1 TSC
+    //  2 TCE
+    //  3 TOR
     for (auto const& bc : bcRange) {
-      if (!udhelpers::cleanFIT(bc, diffCuts.maxFITtime(), diffCuts.FITAmpLimits())) {
+      if (udhelpers::FITveto(bc, diffCuts)) {
         return 1;
       }
     }
